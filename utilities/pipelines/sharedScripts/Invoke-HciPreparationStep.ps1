@@ -36,11 +36,10 @@
     $context = Get-HciEnvironmentContext -RepoRootPath $RepoRootPath -SubscriptionId $subscription.id -TenantId $TenantId `
         -Owner (Get-HciEnvironmentKey -Value "$RunIdentity|$ModulePath|$($TestCase.path)") -HciHostImageReferenceId $externalImageId
     if ($Stage -eq 'Begin') {
-        foreach ($name in @('arbLocalAdminAndDeploymentUserPass', 'arbDeploymentAppId', 'arbDeploymentSPObjectId', 'arbDeploymentServicePrincipalSecret')) {
-            if (-not $parameters.ContainsKey($name) -or $parameters[$name].Length -eq 0) {
-                throw "Required existing CI credential [$name] is missing; preparation has not started."
-            }
+        if (-not $parameters.ContainsKey('arbLocalAdminAndDeploymentUserPass') -or $parameters['arbLocalAdminAndDeploymentUserPass'].Length -eq 0) {
+            throw 'Required existing CI credential [arbLocalAdminAndDeploymentUserPass] is missing; preparation has not started.'
         }
+        $null = Get-HciArbServicePrincipalParameterName -Parameters $parameters
         $providers = @(
             'Microsoft.Compute', 'Microsoft.VirtualMachineImages', 'Microsoft.ManagedIdentity',
             'Microsoft.Network', 'Microsoft.Storage', 'Microsoft.KeyVault', 'Microsoft.Maintenance',
