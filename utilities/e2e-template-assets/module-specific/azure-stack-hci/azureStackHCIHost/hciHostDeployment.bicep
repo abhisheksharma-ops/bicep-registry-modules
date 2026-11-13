@@ -501,6 +501,8 @@ resource runCommand5 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' 
         value: localAdminPassword
       }
     ]
+    // Node VM creation, copies and boot waits can exceed the 90-minute default on a slow host.
+    timeoutInSeconds: 10800
     treatFailureAsDeploymentFailure: true
   }
   dependsOn: [runCommand3d]
@@ -575,6 +577,8 @@ resource runCommand6 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' 
         value: localAdminPassword
       }
     ]
+    // The script can wait about 50 minutes for VMs, internet and Arc onboarding, plus its own work.
+    timeoutInSeconds: 10800
     treatFailureAsDeploymentFailure: true
   }
   dependsOn: [runCommand5]
