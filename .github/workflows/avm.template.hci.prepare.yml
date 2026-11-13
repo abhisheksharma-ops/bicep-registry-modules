@@ -39,6 +39,7 @@ jobs:
         env:
           TEST_CASE: ${{ inputs.testCase }}
           TEST_SUBSCRIPTION_IDS: ${{ vars.VALIDATE_SUBSCRIPTION_IDS || vars.TEST_SUBSCRIPTION_IDS || secrets.VALIDATE_SUBSCRIPTION_IDS || secrets.TEST_SUBSCRIPTION_IDS }}
+          VALIDATE_TENANT_ID: ${{ vars.VALIDATE_TENANT_ID || secrets.VALIDATE_TENANT_ID }}
         run: |
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'utilities' 'pipelines' 'sharedScripts' 'HciTestEnvironment.ps1')
@@ -46,6 +47,12 @@ jobs:
           $subscription = Get-HciTestSubscription -ModulePath 'avm/res/azure-stack-hci/logical-network' `
             -TestSubscriptionIds $env:TEST_SUBSCRIPTION_IDS -SubscriptionIndex $testCase.subscriptionIndex `
             -SubscriptionKey $testCase.subscriptionKey -RepoRootPath $env:GITHUB_WORKSPACE
+          foreach ($value in @([string] $subscription.id, [string] $env:VALIDATE_TENANT_ID)) {
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+              @($value, $value.ToLowerInvariant(), $value.ToUpperInvariant()) | Select-Object -Unique |
+                ForEach-Object { Write-Output "::add-mask::$_" }
+            }
+          }
           "subscriptionId=$($subscription.id)" >> $env:GITHUB_OUTPUT
       - name: "Log in to the reserved subscription"
         uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
@@ -81,9 +88,7 @@ jobs:
               -ReceiptStorageAccountName $env:HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT `
               -Recreate:([bool]::Parse($env:HCI_RECREATE)) -Maintenance:$true
             if ($env:HCI_STAGE -ceq 'Ready') {
-              "Resolved immutable host image: $($result.ImageVersionResourceId)" >> $env:GITHUB_STEP_SUMMARY
-              "External read-only image: $($result.ExternalImage)" >> $env:GITHUB_STEP_SUMMARY
-              "Owned resource groups: $($result.OwnedResourceIds -join ', ')" >> $env:GITHUB_STEP_SUMMARY
+              "Prepared environment ready: host image resolved; $(@($result.OwnedResourceIds).Count) owned resource group(s). Identifiers are omitted from this public summary." >> $env:GITHUB_STEP_SUMMARY
             }
 
   job_image_wait_1:
