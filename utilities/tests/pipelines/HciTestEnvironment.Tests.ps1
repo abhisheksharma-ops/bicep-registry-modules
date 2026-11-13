@@ -1239,8 +1239,9 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         $tags['avm-foundation-operation'] | Should -Be '44444444-4444-4444-4444-444444444444'
         $deadline = $tags['avm-foundation-deadline']
         Mock Get-AzResourceGroupDeployment {
+            # Matches PSResourceGroupDeployment, which has no Id property.
             [pscustomobject] @{
-                Id = $script:hciContext.DeploymentResourceId
+                ResourceGroupName = $script:hciContext.Config.foundationResourceGroupName
                 DeploymentName = $script:hciContext.Config.deploymentName
                 ProvisioningState = 'Succeeded'
                 CorrelationId = '44444444-4444-4444-4444-444444444444'
@@ -1297,5 +1298,21 @@ Describe 'Persistent resource cleanup guard and exact operation observation' {
                 -ExpectedCorrelationId '33333333-3333-3333-3333-333333333333' } |
             Should -Throw '*replaced deployment operation*'
         Should -Invoke Get-TemplateDeployment -Times 1 -Exactly
+    }
+
+    It 'Rejects a resource-group deployment without an Id from another resource group' {
+        $id = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/foundation/providers/Microsoft.Resources/deployments/foundation'
+        Mock Get-TemplateDeployment {
+            [pscustomobject] @{
+                ResourceGroupName = 'other'
+                DeploymentName = 'foundation'
+                ProvisioningState = 'Succeeded'
+                CorrelationId = '44444444-4444-4444-4444-444444444444'
+                Outputs = @{}
+            }
+        }
+        { Wait-TemplateDeployment -DeploymentScope resourcegroup -DeploymentName foundation -ResourceGroupName foundation `
+                -ExpectedDeploymentId $id -ExpectedCorrelationId '44444444-4444-4444-4444-444444444444' } |
+            Should -Throw '*unambiguous original deployment*'
     }
 }
