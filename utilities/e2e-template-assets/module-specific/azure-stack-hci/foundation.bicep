@@ -23,17 +23,17 @@ param builtInServicePrincipalObjectId string
 @secure()
 param arbLocalAdminAndDeploymentUserPass string
 
-@description('Required. Existing resource-bridge service principal application ID.')
+@description('Optional. Existing resource-bridge service principal application ID. Only Azure Local 2411.3 and earlier need it; supply all three service principal values or none.')
 @secure()
-param arbDeploymentAppId string
+param arbDeploymentAppId string?
 
-@description('Required. Existing resource-bridge service principal object ID.')
+@description('Optional. Existing resource-bridge service principal object ID. Only Azure Local 2411.3 and earlier need it; supply all three service principal values or none.')
 @secure()
-param arbDeploymentSPObjectId string
+param arbDeploymentSPObjectId string?
 
-@description('Required. Existing resource-bridge service principal secret.')
+@description('Optional. Existing resource-bridge service principal secret. Only Azure Local 2411.3 and earlier need it; supply all three service principal values or none.')
 @secure()
-param arbDeploymentServicePrincipalSecret string
+param arbDeploymentServicePrincipalSecret string?
 
 @description('Required. Validated immutable host image-version resource ID.')
 @secure()

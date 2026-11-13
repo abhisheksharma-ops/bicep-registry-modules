@@ -29,6 +29,19 @@ function Get-HciEnvironmentParameterMap {
     Get-CIParameterMap -TemplateParameters $definitions -GitHubVariables $GitHubVariables -GitHubSecrets $GitHubSecrets -KeyVaultName $KeyVaultName
 }
 
+function Get-HciArbServicePrincipalParameterName {
+    # Azure Local 2411.3 and earlier need all three resource-bridge service principal values; later releases need none.
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)] [hashtable] $Parameters)
+
+    $names = @('arbDeploymentAppId', 'arbDeploymentSPObjectId', 'arbDeploymentServicePrincipalSecret')
+    $supplied = @($names | Where-Object { $Parameters.ContainsKey($_) -and $null -ne $Parameters[$_] -and $Parameters[$_].Length -gt 0 })
+    if ($supplied.Count -notin @(0, $names.Count)) {
+        throw "Supply all three resource-bridge service principal parameters [$($names -join ', ')] or none of them. Nothing was started or submitted."
+    }
+    return $supplied
+}
+
 function Get-HciTestSubscription {
     [CmdletBinding()]
     param (
@@ -519,11 +532,13 @@ function Start-HciEnvironmentFoundation {
     if (Get-HciArmResource -ResourceId $Context.DeploymentResourceId -ApiVersion '2022-09-01' -AllowNotFound) {
         throw 'An unrecorded foundation deployment already exists; it will not be adopted or overwritten.'
     }
-    foreach ($name in @('arbLocalAdminAndDeploymentUserPass', 'arbDeploymentAppId', 'arbDeploymentSPObjectId', 'arbDeploymentServicePrincipalSecret', 'builtInServicePrincipalObjectId')) {
+    $requiredNames = @('arbLocalAdminAndDeploymentUserPass', 'builtInServicePrincipalObjectId')
+    foreach ($name in $requiredNames) {
         if (-not $Parameters.ContainsKey($name) -or $null -eq $Parameters[$name] -or $Parameters[$name].Length -eq 0) {
             throw "Required existing CI identity/credential parameter [$name] is missing. No foundation deployment was submitted."
         }
     }
+    $submittedNames = $requiredNames + @(Get-HciArbServicePrincipalParameterName -Parameters $Parameters)
     $compiled = bicep build (Join-Path $Context.AssetRoot 'foundation.bicep') --stdout
     if ($LASTEXITCODE -ne 0) { throw 'The Azure Local foundation did not compile.' }
     $template = $compiled -join [Environment]::NewLine | ConvertFrom-Json -AsHashtable
@@ -536,7 +551,7 @@ function Start-HciEnvironmentFoundation {
         generation              = $registry.tags['avm-generation']
         hciHostImageReferenceId  = $Context.ImageVersionResourceId
     }
-    foreach ($name in @('arbLocalAdminAndDeploymentUserPass', 'arbDeploymentAppId', 'arbDeploymentSPObjectId', 'arbDeploymentServicePrincipalSecret', 'builtInServicePrincipalObjectId')) {
+    foreach ($name in $submittedNames) {
         $value = $Parameters[$name]
         $values[$name] = $value -is [securestring] ? ([pscredential]::new('ci', $value)).GetNetworkCredential().Password : $value
     }

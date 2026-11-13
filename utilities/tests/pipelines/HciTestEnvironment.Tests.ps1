@@ -461,9 +461,6 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
                 SourceCommit        = 'b' * 40
                 GitHubSecrets       = @{
                     CI_ARB_LOCAL_ADMIN_AND_DEPLOYMENT_USER_PASS = 'offline'
-                    CI_ARB_DEPLOYMENT_APP_ID                    = 'offline'
-                    CI_ARB_DEPLOYMENT_SP_OBJECT_ID              = 'offline'
-                    CI_ARB_DEPLOYMENT_SERVICE_PRINCIPAL_SECRET  = 'offline'
                 } | ConvertTo-Json -Compress
                 Recreate            = $false
                 Maintenance         = $true
@@ -495,6 +492,28 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
             Should -Invoke New-AzResourceGroup -Times 0 -Exactly
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
             Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Method -ne 'GET' }
+        }
+
+        It 'Rejects a partial resource-bridge service principal before preparation' {
+            Mock Get-AzResourceProvider {
+                [pscustomobject]@{
+                    ProviderNamespace = $ProviderNamespace
+                    RegistrationState = 'Registered'
+                    ResourceTypes     = @([pscustomobject]@{ ResourceTypeName = 'offline-type' })
+                }
+            }
+            Add-Registry -State Idle
+            Add-ReadyImage
+            $beginInput.GitHubSecrets = @{
+                CI_ARB_LOCAL_ADMIN_AND_DEPLOYMENT_USER_PASS = 'offline'
+                CI_ARB_DEPLOYMENT_APP_ID                    = 'offline'
+            } | ConvertTo-Json -Compress
+
+            { Invoke-HciPreparationStep @beginInput } | Should -Throw '*all three resource-bridge service principal parameters*'
+
+            Should -Invoke Get-AzResourceProvider -Times 0 -Exactly
+            Should -Invoke Update-AzTag -Times 0 -Exactly
+            $script:resources[$context.GroupIds.control].tags['avm-state'] | Should -BeExactly 'Idle'
         }
 
         It 'Rejects <case> provider output before preparation' -ForEach @(
@@ -1227,6 +1246,8 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
             $payloadObject.properties.parameters.location.value | Should -BeExactly $context.Config.location
             $payloadObject.properties.parameters.hciHostImageReferenceId.value | Should -Be $context.ImageVersionResourceId
             $payloadObject.properties.parameters.generation.value | Should -Be 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            $payloadObject.properties.parameters.arbDeploymentAppId.value | Should -BeExactly '66666666-6666-6666-6666-666666666666'
+            $payloadObject.properties.parameters.arbDeploymentServicePrincipalSecret.value | Should -BeExactly 'offline-secret-placeholder'
             Add-ReadyFoundation
             $script:resources[$context.DeploymentResourceId].properties.provisioningState = 'Running'
             [pscustomobject] @{ StatusCode = 201; Content = $script:resources[$context.DeploymentResourceId] | ConvertTo-Json -Depth 20 }
@@ -1254,6 +1275,53 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         $tags['avm-foundation-deadline'] | Should -Be $deadline
         Start-HciEnvironmentFoundation -Context $context -Parameters @{}
         Should -Invoke Invoke-AzRestMethod -Times 1 -Exactly -ParameterFilter { $Method -eq 'PUT' }
+    }
+
+    It 'Submits a foundation without the optional resource-bridge service principal' {
+        Add-Registry
+        Add-ReadyImage
+        Mock bicep {
+            $global:LASTEXITCODE = 0
+            '{"$schema":"https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#","contentVersion":"1.0.0.0","resources":[]}'
+        }
+        Mock Invoke-AzRestMethod {
+            $script:foundationParameters = ($Payload | ConvertFrom-Json -AsHashtable).properties.parameters
+            Add-ReadyFoundation
+            $script:resources[$context.DeploymentResourceId].properties.provisioningState = 'Running'
+            [pscustomobject] @{ StatusCode = 201; Content = $script:resources[$context.DeploymentResourceId] | ConvertTo-Json -Depth 20 }
+        } -ParameterFilter { $Method -eq 'PUT' }
+
+        Start-HciEnvironmentFoundation -Context $context -Parameters @{
+            arbLocalAdminAndDeploymentUserPass = ConvertTo-SecureString 'offline-password-placeholder' -AsPlainText -Force
+            builtInServicePrincipalObjectId    = '88888888-8888-8888-8888-888888888888'
+        }
+
+        Should -Invoke Invoke-AzRestMethod -Times 1 -Exactly -ParameterFilter { $Method -eq 'PUT' }
+        $script:foundationParameters.arbLocalAdminAndDeploymentUserPass.value | Should -BeExactly 'offline-password-placeholder'
+        @($script:foundationParameters.Keys | Where-Object { $_ -like 'arbDeployment*' }) | Should -BeNullOrEmpty
+    }
+
+    It 'Rejects <case> before submitting a foundation' -ForEach @(
+        @{ case = 'a partial resource-bridge service principal'; name = 'arbDeploymentAppId'; value = $null; expectedError = '*all three resource-bridge service principal parameters*' }
+        @{ case = 'a blank resource-bridge secret'; name = 'arbDeploymentServicePrincipalSecret'; value = [securestring]::new(); expectedError = '*all three resource-bridge service principal parameters*' }
+        @{ case = 'a missing built-in service principal object ID'; name = 'builtInServicePrincipalObjectId'; value = $null; expectedError = '*builtInServicePrincipalObjectId*is missing*' }
+    ) {
+        Add-Registry
+        Add-ReadyImage
+        Mock bicep { throw 'The foundation compiled before its parameters were checked.' }
+        $parameters = @{
+            arbLocalAdminAndDeploymentUserPass  = ConvertTo-SecureString 'offline-password-placeholder' -AsPlainText -Force
+            arbDeploymentAppId                  = '66666666-6666-6666-6666-666666666666'
+            arbDeploymentSPObjectId             = '77777777-7777-7777-7777-777777777777'
+            arbDeploymentServicePrincipalSecret = ConvertTo-SecureString 'offline-secret-placeholder' -AsPlainText -Force
+            builtInServicePrincipalObjectId     = '88888888-8888-8888-8888-888888888888'
+        }
+        $parameters[$name] = $value
+
+        { Start-HciEnvironmentFoundation -Context $context -Parameters $parameters } | Should -Throw $expectedError
+
+        Should -Invoke bicep -Times 0 -Exactly
+        Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Method -eq 'PUT' }
     }
 }
 
