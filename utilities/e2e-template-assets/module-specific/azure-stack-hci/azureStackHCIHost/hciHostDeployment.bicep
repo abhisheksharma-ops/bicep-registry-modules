@@ -608,6 +608,8 @@ resource runCommand7 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' 
         value: userAssignedIdentity.properties.clientId
       }
     ]
+    // The script waits up to 180 minutes, longer than the 90-minute default.
+    timeoutInSeconds: 12600
     treatFailureAsDeploymentFailure: true
   }
   dependsOn: [runCommand6]
