@@ -69,7 +69,7 @@ module dependencies 'dependencies/dependencies.bicep' = {
   }
 }
 
-module cluster 'br/public:avm/res/azure-stack-hci/cluster:0.4.0' = {
+module cluster 'br/public:avm/res/azure-stack-hci/cluster:0.6.0' = {
   name: 'foundation-cluster'
   params: {
     name: dependencies.outputs.clusterName
