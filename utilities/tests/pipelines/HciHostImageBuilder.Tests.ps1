@@ -30,6 +30,8 @@ Describe 'HCI host image builder templates' {
         $parameters = @('using none')
         $payloadMatch = [regex]::Match($childText, '(?ms)^var payloadDownload = (?<expression>.*?)(?=\r?\n\r?\n)')
         if (-not $payloadMatch.Success) { throw 'Missing payloadDownload expression.' }
+        $servicingMatch = [regex]::Match($childText, '(?ms)^var servicingIdleWait = (?<expression>.*?)(?=\r?\n\r?\n)')
+        if (-not $servicingMatch.Success) { throw 'Missing servicingIdleWait expression.' }
         $payloadFixture = Join-Path $TestDrive 'expected.vhdx'
         [IO.File]::WriteAllText($payloadFixture, 'offline verified payload')
         $payloadHash = (Get-FileHash -LiteralPath $payloadFixture -Algorithm SHA256).Hash
@@ -38,6 +40,7 @@ Describe 'HCI host image builder templates' {
             "var encodedPayloadUri = base64('https://example.test/AzLocal2601.vhdx')"
             "var encodedPayloadSha256 = base64('$payloadHash')"
             "param payloadDownload = $($payloadMatch.Groups['expression'].Value)"
+            "param servicingIdleWait = $($servicingMatch.Groups['expression'].Value)"
         )
         foreach ($scenario in $scenarios) {
             $expression = $match.Groups['expression'].Value.
@@ -53,6 +56,12 @@ Describe 'HCI host image builder templates' {
         if ($LASTEXITCODE -ne 0) { throw ($diagnostics | Out-String) }
         $regions = (Get-Content -LiteralPath $parameterOutput -Raw | ConvertFrom-Json -AsHashtable).parameters
         $script:payloadScript = $regions.payloadDownload.value -join "`n"
+        $script:servicingScript = $regions.servicingIdleWait.value -join "`n"
+
+        function Stop-Service {
+            param ([string] $Name, [switch] $Force)
+            throw 'Stop-Service must be mocked.'
+        }
     }
 
     It 'Preserves the stable external defaults in the subscription template' {
@@ -259,6 +268,51 @@ Describe 'HCI host image builder templates' {
 
             Should -Invoke Invoke-WebRequest -Times 1 -Exactly
             Should -Invoke Get-FileHash -Times 1 -Exactly
+        }
+    }
+
+    Context 'Servicing idle before deprovisioning' {
+        BeforeEach {
+            $script:servicingScriptBlock = [scriptblock]::Create($script:servicingScript)
+            Mock Start-Process { [pscustomobject] @{ ExitCode = 0 } }
+            Mock Start-Sleep {}
+            Mock Stop-Service {}
+            Mock Write-Warning {}
+        }
+
+        It 'Cleans the component store synchronously after the payload and waits for sustained idle servicing' {
+            $imageTemplate.properties.customize.Count | Should -Be 4
+            $imageTemplate.properties.customize[3].name | Should -Be 'WaitForServicingIdle'
+            $imageTemplate.properties.customize[3].inline | Should -Be "[variables('servicingIdleWait')]"
+            $script:processChecks = 0
+            Mock Get-Process {
+                $script:processChecks++
+                if ($script:processChecks -le 2) { [pscustomobject] @{ Name = 'TiWorker' } }
+            }
+
+            . $script:servicingScriptBlock
+
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+                $FilePath -like '*System32\Dism.exe' -and $ArgumentList -match '^/Online /Cleanup-Image /StartComponentCleanup\b' -and $Wait
+            }
+            Should -Invoke Get-Process -Times 5 -Exactly -ParameterFilter { $Name -eq 'TiWorker' }
+            Should -Invoke Stop-Service -Times 0 -Exactly
+            Should -Invoke Write-Warning -Times 0 -Exactly
+        }
+
+        It 'Stops the Windows Modules Installer when servicing stays busy for 30 minutes' {
+            $script:now = [datetime] '2026-01-01T00:00:00'
+            Mock Get-Date { $script:now }
+            Mock Start-Sleep { $script:now = $script:now.AddSeconds($Seconds) }
+            Mock Get-Process { [pscustomobject] @{ Name = 'TiWorker' } }
+            Mock Start-Process { [pscustomobject] @{ ExitCode = 1 } }
+
+            . $script:servicingScriptBlock
+
+            Should -Invoke Start-Sleep -Times 90 -Exactly
+            Should -Invoke Stop-Service -Times 1 -Exactly -ParameterFilter { $Name -eq 'TrustedInstaller' -and $Force }
+            Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -like '*exit code `[1`]*' }
+            Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter { $Message -like '*still busy*' }
         }
     }
 }
