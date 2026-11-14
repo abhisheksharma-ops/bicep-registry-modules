@@ -65,6 +65,9 @@ param imageReferenceId string = ''
 @description('Optional. Grant the host identity subscription Contributor. Disable when providers are already registered and only resource-group access is required.')
 param assignSubscriptionContributor bool = true
 
+@description('Optional. The object ID of the Azure Stack HCI resource provider service principal. When provided, the built-in role assignments of the cluster module are created before stage 7, and stage 7 creates the node edge devices, which install the node extensions on 24H2 and later images.')
+param hciResourceProviderObjectId string = ''
+
 // =================================//
 // Deploy Host VM Infrastructure    //
 // =================================//
@@ -584,6 +587,98 @@ resource runCommand6 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' 
   dependsOn: [runCommand5]
 }
 
+// ===================================================== //
+// Azure Stack HCI resource provider role assignments    //
+// ===================================================== //
+
+// On 24H2 and later images, Arc initialization no longer installs the node extensions: the edge device resource does,
+// through the resource provider, which needs these roles. Names and properties match the cluster module's built-in
+// role assignments, so its later deployment updates them in place.
+var createHciResourceProviderRoleAssignments = !empty(hciResourceProviderObjectId)
+
+var arcNodeResourceIds = [
+  for i in range(1, hciNodeCount): resourceId('Microsoft.HybridCompute/machines', 'hcinode${i}')
+]
+
+var azureConnectedMachineResourceManagerRoleID = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'f5819b54-e033-4d82-ac66-4fec3cbf3f4c'
+)
+var readerRoleID = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'acdd72a7-3385-48ef-bd42-f606fba81ae7'
+)
+var azureStackHCIDeviceManagementRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '865ae368-6a45-4bd1-8fbf-0d5151f56fc1'
+)
+
+resource spConnectedMachineResourceManagerRolePermissions 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createHciResourceProviderRoleAssignments) {
+  name: guid(
+    subscription().subscriptionId,
+    hciResourceProviderObjectId,
+    'ConnectedMachineResourceManagerRolePermissions',
+    resourceGroup().id
+  )
+  properties: {
+    roleDefinitionId: azureConnectedMachineResourceManagerRoleID
+    principalId: hciResourceProviderObjectId
+    principalType: 'ServicePrincipal'
+    description: 'Created by Azure Stack HCI deployment template'
+  }
+}
+
+resource nodeAzureConnectedMachineResourceManagerRolePermissions 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+    name: guid(
+      subscription().subscriptionId,
+      hciResourceProviderObjectId,
+      'azureConnectedMachineResourceManager',
+      hciNode,
+      resourceGroup().id
+    )
+    properties: {
+      roleDefinitionId: azureConnectedMachineResourceManagerRoleID
+      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalType: 'ServicePrincipal'
+      description: 'Created by Azure Stack HCI deployment template'
+    }
+    dependsOn: [runCommand6]
+  }
+]
+
+resource nodeAzureStackHCIDeviceManagementRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+    name: guid(
+      subscription().subscriptionId,
+      hciResourceProviderObjectId,
+      'azureStackHCIDeviceManagementRole',
+      hciNode,
+      resourceGroup().id
+    )
+    properties: {
+      roleDefinitionId: azureStackHCIDeviceManagementRole
+      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalType: 'ServicePrincipal'
+      description: 'Created by Azure Stack HCI deployment template'
+    }
+    dependsOn: [runCommand6]
+  }
+]
+
+resource nodeReaderRolePermissions 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+    name: guid(subscription().subscriptionId, hciResourceProviderObjectId, 'reader', hciNode, resourceGroup().id)
+    properties: {
+      roleDefinitionId: readerRoleID
+      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalType: 'ServicePrincipal'
+      description: 'Created by Azure Stack HCI deployment template'
+    }
+    dependsOn: [runCommand6]
+  }
+]
+
 // waits for HCI extensions to be in succeeded state
 resource runCommand7 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' = {
   parent: vm
@@ -610,12 +705,22 @@ resource runCommand7 'Microsoft.Compute/virtualMachines/runCommands@2024-03-01' 
         name: 'userAssignedManagedIdentityClientId'
         value: userAssignedIdentity.properties.clientId
       }
+      {
+        name: 'ensureEdgeDevices'
+        value: string(createHciResourceProviderRoleAssignments)
+      }
     ]
     // The script waits up to 180 minutes, longer than the 90-minute default.
     timeoutInSeconds: 12600
     treatFailureAsDeploymentFailure: true
   }
-  dependsOn: [runCommand6]
+  dependsOn: [
+    runCommand6
+    spConnectedMachineResourceManagerRolePermissions
+    nodeAzureConnectedMachineResourceManagerRolePermissions
+    nodeAzureStackHCIDeviceManagementRole
+    nodeReaderRolePermissions
+  ]
 }
 
 // ============================================= //

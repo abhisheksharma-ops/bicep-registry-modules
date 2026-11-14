@@ -10,6 +10,9 @@ param hciHostImageReferenceId string = ''
 @description('Optional. Grant the host identity subscription Contributor.')
 param assignSubscriptionContributor bool = true
 
+@description('Optional. The object ID of the Azure Stack HCI resource provider service principal. When provided, the host deployment grants the cluster module\'s built-in roles early, so the node extensions can install before the cluster deployment.')
+param hciResourceProviderObjectId string = ''
+
 @description('Required. The password of the LCM deployment user and local administrator accounts.')
 @secure()
 param localAdminPassword string
@@ -72,6 +75,7 @@ module hciHostDeployment '../azureStackHCIHost/hciHostDeployment.bicep' = {
     domainOUPath: domainOUPath
     imageReferenceId: hciHostImageReferenceId
     assignSubscriptionContributor: assignSubscriptionContributor
+    hciResourceProviderObjectId: hciResourceProviderObjectId
     hciNodeCount: length(clusterNodeNames)
     hostVMSize: 'Standard_E48bds_v5'
     localAdminPassword: localAdminPassword
