@@ -83,6 +83,26 @@ var payloadDownload = [
   'if ($actualSha256 -ine $expectedSha256) { throw "HCI VHDX payload SHA256 mismatch. Expected [$expectedSha256], received [$actualSha256]." }'
 ]
 
+// Sysprep can deadlock with automatic component store maintenance, so servicing must be idle before Image Builder deprovisions.
+var servicingIdleWait = [
+  '$ErrorActionPreference = \'Stop\''
+  '$ProgressPreference = \'SilentlyContinue\''
+  '$dism = Start-Process -FilePath "$env:SystemRoot\\System32\\Dism.exe" -ArgumentList \'/Online /Cleanup-Image /StartComponentCleanup /NoRestart /Quiet\' -Wait -PassThru -NoNewWindow'
+  'if ($dism.ExitCode -notin 0, 3010) { Write-Warning "Component store cleanup returned exit code [$($dism.ExitCode)]." }'
+  '$deadline = (Get-Date).AddMinutes(30)'
+  '$idleSamples = 0'
+  'while ($true) {'
+  '  if (Get-Process -Name TiWorker -ErrorAction SilentlyContinue) { $idleSamples = 0 } else { $idleSamples++ }'
+  '  if ($idleSamples -ge 3) { break }'
+  '  if ((Get-Date) -ge $deadline) {'
+  '    Write-Warning \'Windows Modules Installer is still busy; stopping it before deprovisioning.\''
+  '    Stop-Service -Name TrustedInstaller -Force'
+  '    break'
+  '  }'
+  '  Start-Sleep -Seconds 20'
+  '}'
+]
+
 resource imageTemplate 'Microsoft.VirtualMachineImages/imageTemplates@2025-10-01' = {
   name: imageTemplateName
   location: buildLocation
@@ -123,6 +143,13 @@ resource imageTemplate 'Microsoft.VirtualMachineImages/imageTemplates@2025-10-01
         runElevated: true
         runAsSystem: true
         inline: payloadDownload
+      }
+      {
+        type: 'PowerShell'
+        name: 'WaitForServicingIdle'
+        runElevated: true
+        runAsSystem: true
+        inline: servicingIdleWait
       }
     ]
     distribute: [
