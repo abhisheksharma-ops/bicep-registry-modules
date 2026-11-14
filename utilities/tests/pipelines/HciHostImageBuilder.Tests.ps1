@@ -171,11 +171,13 @@ Describe 'HCI host image builder templates' {
             $expected = $casing -eq 'lowercase' ? $payloadHash.ToLowerInvariant() : $payloadHash
             $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($expected))
             $downloadScript = [scriptblock]::Create($script:downloadScript.ToString().Replace($script:encodedPayloadHash, $encoded))
+            $ProgressPreference = 'Continue'
 
             . $downloadScript
 
             Should -Invoke Invoke-WebRequest -Times 1 -Exactly
             $actualSha256 | Should -Be $payloadHash
+            $ProgressPreference | Should -BeExactly 'SilentlyContinue' -Because 'the Windows PowerShell 5.1 progress bar throttles multi-GB downloads'
         }
 
         It 'Rejects a <case> payload without retrying a successful HTTP download' -ForEach @(
