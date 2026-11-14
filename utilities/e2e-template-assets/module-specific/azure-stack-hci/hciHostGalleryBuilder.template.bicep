@@ -61,6 +61,7 @@ var encodedPayloadUri = base64(hciVhdxDownloadUri)
 var encodedPayloadSha256 = base64(hciVhdxSha256)
 var payloadDownload = [
   '$ErrorActionPreference = \'Stop\''
+  '$ProgressPreference = \'SilentlyContinue\''
   '$destination = \'C:\\ISOs\\hci_os.vhdx\''
   '$payloadUri = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${encodedPayloadUri}\'))'
   '$expectedSha256 = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${encodedPayloadSha256}\'))'
