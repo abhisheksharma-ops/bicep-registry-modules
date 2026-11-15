@@ -68,6 +68,9 @@ param assignSubscriptionContributor bool = true
 @description('Optional. The object ID of the Azure Stack HCI resource provider service principal. When provided, the built-in role assignments of the cluster module are created before stage 7, and stage 7 creates the node edge devices, which install the node extensions on 24H2 and later images.')
 param hciResourceProviderObjectId string = ''
 
+@description('Optional. Install updates on the host VM in a weekly maintenance window (Sunday 08:00-10:00 UTC), restarting it if required. Disable for a host that must not install updates or restart during its multi-hour setup and cluster deployment: the host then uses manual patching, without Windows automatic updates.')
+param enableScheduledPatching bool = true
+
 // =================================//
 // Deploy Host VM Infrastructure    //
 // =================================//
@@ -160,7 +163,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-07-01' = {
 }
 
 // create a maintenance configuration for the Azure Stack HCI Host VM and proxy server
-resource maintenanceConfig 'Microsoft.Maintenance/maintenanceConfigurations@2023-09-01-preview' = {
+resource maintenanceConfig 'Microsoft.Maintenance/maintenanceConfigurations@2023-09-01-preview' = if (enableScheduledPatching) {
   location: location
   name: maintenanceConfigurationName ?? ''
   properties: {
@@ -298,19 +301,23 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
       computerName: 'hciHost01'
       windowsConfiguration: {
         provisionVMAgent: true
-        enableAutomaticUpdates: true
-        patchSettings: {
-          patchMode: 'AutomaticByPlatform'
-          automaticByPlatformSettings: {
-            bypassPlatformSafetyChecksOnUserSchedule: true
-          }
-        }
+        enableAutomaticUpdates: enableScheduledPatching
+        patchSettings: enableScheduledPatching
+          ? {
+              patchMode: 'AutomaticByPlatform'
+              automaticByPlatformSettings: {
+                bypassPlatformSafetyChecksOnUserSchedule: true
+              }
+            }
+          : {
+              patchMode: 'Manual'
+            }
       }
     }
   }
 }
 
-resource maintenanceAssignment_hciHost 'Microsoft.Maintenance/configurationAssignments@2023-04-01' = {
+resource maintenanceAssignment_hciHost 'Microsoft.Maintenance/configurationAssignments@2023-04-01' = if (enableScheduledPatching) {
   location: location
   name: maintenanceConfigurationAssignmentName
   properties: {

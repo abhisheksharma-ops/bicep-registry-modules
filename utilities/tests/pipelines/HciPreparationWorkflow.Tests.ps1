@@ -390,4 +390,21 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         @($cluster.properties.parameters.Keys) | Should -Not -Contain 'clusterADName'
         $environment.clusterName.Length | Should -BeLessOrEqual 15
     }
+
+    It 'Keeps the foundation host from installing updates and restarting in a maintenance window' {
+        $dependencies = $compiled['foundation.bicep'].resources.dependencies
+        $dependencies.properties.parameters.enableScheduledPatching.value | Should -BeFalse
+        $hostDeployment = $dependencies.properties.template.resources.hciHostDeployment
+        Get-ParameterExpression $hostDeployment.properties.parameters.enableScheduledPatching |
+            Should -Be "[parameters('enableScheduledPatching')]"
+        $hostResources = $hostDeployment.properties.template.resources
+        $hostResources = $hostResources -is [System.Collections.IDictionary] ? @($hostResources.Values) : @($hostResources)
+        $maintenance = @($hostResources | Where-Object type -Match '^Microsoft\.Maintenance/')
+        $maintenance.Count | Should -Be 2
+        $maintenance | ForEach-Object { $_.condition | Should -Be "[parameters('enableScheduledPatching')]" }
+        $vm = @($hostResources | Where-Object type -EQ 'Microsoft.Compute/virtualMachines')
+        $vm.Count | Should -Be 1
+        $vm[0].properties.osProfile.windowsConfiguration.enableAutomaticUpdates | Should -Be "[parameters('enableScheduledPatching')]"
+        $vm[0].properties.osProfile.windowsConfiguration.patchSettings | Should -Match "parameters\('enableScheduledPatching'\).*'Manual'"
+    }
 }

@@ -67,6 +67,8 @@ module dependencies 'dependencies/dependencies.bicep' = {
     hciHostImageReferenceId: hciHostImageReferenceId
     assignSubscriptionContributor: false
     hciResourceProviderObjectId: builtInServicePrincipalObjectId
+    // A weekly update window could install updates and restart the host during the hours-long foundation deployment.
+    enableScheduledPatching: false
   }
 }
 
