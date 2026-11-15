@@ -384,10 +384,10 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
             Should -Be "[string(variables('createHciResourceProviderRoleAssignments'))]"
     }
 
-    It 'Passes the cluster module an Active Directory name within its 15-character limit' {
+    It 'Gives the cluster resource the same name as its Active Directory name, within 15 characters' {
         $cluster = $compiled['foundation.bicep'].resources.cluster
         $cluster.properties.template.parameters.clusterADName.maxLength | Should -Be 15
-        Get-ParameterExpression $cluster.properties.parameters.clusterADName |
-            Should -Be "[take(replace(parameters('clusterName'), '-', ''), 15)]"
+        @($cluster.properties.parameters.Keys) | Should -Not -Contain 'clusterADName'
+        $environment.clusterName.Length | Should -BeLessOrEqual 15
     }
 }

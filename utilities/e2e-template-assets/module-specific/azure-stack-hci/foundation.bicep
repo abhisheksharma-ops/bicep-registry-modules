@@ -74,8 +74,6 @@ module cluster 'br/public:avm/res/azure-stack-hci/cluster:0.6.0' = {
   name: 'foundation-cluster'
   params: {
     name: dependencies.outputs.clusterName
-    // The cluster's Active Directory (NetBIOS) name is limited to 15 characters.
-    clusterADName: take(replace(clusterName, '-', ''), 15)
     location: location
     tags: tags
     deploymentUser: 'deployUser'
