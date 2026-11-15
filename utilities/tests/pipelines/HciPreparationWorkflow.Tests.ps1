@@ -371,6 +371,22 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
             Should -Be "[string(variables('createHciResourceProviderRoleAssignments'))]"
     }
 
+    It 'Reads the Arc machine identities only after stage 6 registers the machines' {
+        # ARM reads a resource that reference() names outside the template when the deployment starts, whatever its dependencies.
+        $hostTemplate = $compiled['foundation.bicep'].resources.dependencies.properties.template.resources.hciHostDeployment.properties.template
+        $hostResources = $hostTemplate.resources -is [System.Collections.IDictionary] ? @($hostTemplate.resources.Values) : @($hostTemplate.resources)
+        $reader = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -match 'arcMachineIdentities' })
+        $reader.Count | Should -Be 1
+        @($reader[0].dependsOn | Where-Object { $_ -match "'runCommand6'" }).Count | Should -Be 1
+        $nodeRoles = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.copy })
+        $nodeRoles.Count | Should -Be 3
+        foreach ($role in $nodeRoles) {
+            $role.properties.principalId | Should -Match "arcMachineIdentities'.*\.outputs\.principalIds\.value\[copyIndex\(\)\]"
+        }
+        @($hostResources | Where-Object { -not [object]::ReferenceEquals($_, $reader[0]) }) | ConvertTo-Json -Depth 50 |
+            Should -Not -Match "reference\((variables\('arcNodeResourceIds'\)|resourceId\('Microsoft\.HybridCompute/machines')"
+    }
+
     It 'Gives the cluster resource the same name as its Active Directory name, within 15 characters' {
         $cluster = $compiled['foundation.bicep'].resources.cluster
         $cluster.properties.template.parameters.clusterADName.maxLength | Should -Be 15

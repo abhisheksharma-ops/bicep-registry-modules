@@ -603,6 +603,17 @@ var arcNodeResourceIds = [
   for i in range(1, hciNodeCount): resourceId('Microsoft.HybridCompute/machines', 'hcinode${i}')
 ]
 
+// Stage 6 creates the Arc machines outside this template. ARM reads a resource that `reference()` names outside the
+// template when the deployment starts, whatever the dependencies, so the identities are read in a module that starts
+// after stage 6.
+module arcMachineIdentities 'modules/arcMachineIdentities.bicep' = if (createHciResourceProviderRoleAssignments) {
+  name: '${uniqueString(deployment().name, location)}-hcihost-arcMachineIdentities'
+  params: {
+    machineNames: [for i in range(1, hciNodeCount): 'hcinode${i}']
+  }
+  dependsOn: [runCommand6]
+}
+
 var azureConnectedMachineResourceManagerRoleID = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   'f5819b54-e033-4d82-ac66-4fec3cbf3f4c'
@@ -632,7 +643,7 @@ resource spConnectedMachineResourceManagerRolePermissions 'Microsoft.Authorizati
 }
 
 resource nodeAzureConnectedMachineResourceManagerRolePermissions 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+  for (hciNode, i) in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
     name: guid(
       subscription().subscriptionId,
       hciResourceProviderObjectId,
@@ -642,16 +653,15 @@ resource nodeAzureConnectedMachineResourceManagerRolePermissions 'Microsoft.Auth
     )
     properties: {
       roleDefinitionId: azureConnectedMachineResourceManagerRoleID
-      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalId: arcMachineIdentities!.outputs.principalIds[i]
       principalType: 'ServicePrincipal'
       description: 'Created by Azure Stack HCI deployment template'
     }
-    dependsOn: [runCommand6]
   }
 ]
 
 resource nodeAzureStackHCIDeviceManagementRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+  for (hciNode, i) in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
     name: guid(
       subscription().subscriptionId,
       hciResourceProviderObjectId,
@@ -661,24 +671,22 @@ resource nodeAzureStackHCIDeviceManagementRole 'Microsoft.Authorization/roleAssi
     )
     properties: {
       roleDefinitionId: azureStackHCIDeviceManagementRole
-      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalId: arcMachineIdentities!.outputs.principalIds[i]
       principalType: 'ServicePrincipal'
       description: 'Created by Azure Stack HCI deployment template'
     }
-    dependsOn: [runCommand6]
   }
 ]
 
 resource nodeReaderRolePermissions 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for hciNode in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
+  for (hciNode, i) in arcNodeResourceIds: if (createHciResourceProviderRoleAssignments) {
     name: guid(subscription().subscriptionId, hciResourceProviderObjectId, 'reader', hciNode, resourceGroup().id)
     properties: {
       roleDefinitionId: readerRoleID
-      principalId: reference(hciNode, '2026-07-15', 'Full').identity.principalId
+      principalId: arcMachineIdentities!.outputs.principalIds[i]
       principalType: 'ServicePrincipal'
       description: 'Created by Azure Stack HCI deployment template'
     }
-    dependsOn: [runCommand6]
   }
 ]
 
