@@ -5,6 +5,7 @@
   "foundationResourceGroupName": "rg-avm-ci-azure-local-foundation",
   "imageResourceGroupName": "rg-avm-ci-azure-local-image",
   "stagingResourceGroupName": "rg-avm-ci-azure-local-image-build",
+  "testResourceGroupName": "rg-avm-ci-azure-local-test",
   "galleryName": "galavmciazurelocal",
   "imageDefinitionName": "hci-host-image",
   "imageVersion": "26.8.0",

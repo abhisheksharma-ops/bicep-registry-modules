@@ -42,6 +42,10 @@ Optional. Reject attempts containing deployment scripts before cleanup can autho
 .PARAMETER ProtectedResourceIds
 Optional. Exact persistent resource IDs whose resources, descendants and containing scopes must never be removed.
 
+.PARAMETER RetainedResourceGroupIds
+Optional. Exact resource group IDs that cleanup never deletes. Their deployed contents are still removed.
+Cleanup then makes no subscription-scope deletions: it keeps subscription deployment records and soft-deleted resources.
+
 .EXAMPLE
 Initialize-DeploymentRemoval -DeploymentName 'n-vw-t1-20211204T1812029146Z' -TemplateFilePath "$home/ResourceModules/modules/network/virtual-wan/main.bicep" -resourceGroupName 'test-virtualWan-rg'
 
@@ -90,7 +94,10 @@ function Initialize-DeploymentRemoval {
         [switch] $RequireNoDeploymentScripts,
 
         [Parameter()]
-        [string[]] $ProtectedResourceIds = @()
+        [string[]] $ProtectedResourceIds = @(),
+
+        [Parameter()]
+        [string[]] $RetainedResourceGroupIds = @()
     )
 
     begin {
@@ -222,6 +229,9 @@ function Initialize-DeploymentRemoval {
         }
         if (-not [String]::IsNullOrEmpty($ManagementGroupId)) {
             $inputObject['ManagementGroupId'] = $ManagementGroupId
+        }
+        if ($RetainedResourceGroupIds.Count -gt 0) {
+            $inputObject['RetainedResourceGroupIds'] = $RetainedResourceGroupIds
         }
         Remove-Deployment @inputObject
     }

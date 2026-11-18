@@ -102,10 +102,11 @@ inputs:
     required: false
   deploymentDataFile:
     description: >-
-      Optional absolute runner-local JSON file containing parameterOverrides and protectedResourceIds.
+      Optional absolute runner-local JSON file containing parameterOverrides, protectedResourceIds and retainedResourceGroupIds.
       Overrides map declared parameter names to strings, using the ordinary CI ARM type conversions;
       arrays and objects are JSON-encoded strings. Overrides take precedence over CI inputs.
-      Protected resource IDs apply to intermediate and final cleanup. File values are not action outputs.
+      Protected resource IDs apply to intermediate and final cleanup. Retained resource groups are never deleted:
+      cleanup removes their deployed contents only and makes no subscription-scope deletions. File values are not action outputs.
     default: ""
     required: false
   requireCompleteRemoval:
@@ -440,6 +441,9 @@ runs:
           if ($deploymentData.ProtectedResourceIds.Count -gt 0) {
             $retryInput.ProtectedResourceIds = $deploymentData.ProtectedResourceIds
           }
+          if ($deploymentData.RetainedResourceGroupIds.Count -gt 0) {
+            $retryInput.RetainedResourceGroupIds = $deploymentData.RetainedResourceGroupIds
+          }
           $res = Invoke-TemplateDeploymentWithRetry @retryInput -Verbose
 
           if ($requireCompleteRemoval) {
@@ -616,6 +620,9 @@ runs:
             ManagementGroupId      = '${{ inputs.managementGroupId }}'
             RequireCompleteRemoval = $env:AVM_REQUIRE_COMPLETE_REMOVAL -ceq 'true'
             ProtectedResourceIds   = $deploymentData.ProtectedResourceIds
+          }
+          if ($deploymentData.RetainedResourceGroupIds.Count -gt 0) {
+            $functionInput.RetainedResourceGroupIds = $deploymentData.RetainedResourceGroupIds
           }
 
           $tracking = @{

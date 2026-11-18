@@ -6,6 +6,9 @@ Clean the recorded deployment attempts and report whether complete teardown is c
 
 .PARAMETER RequireCompleteRemoval
 Opt into authoritative final teardown. Ordinary callers retain best-effort cleanup.
+
+.PARAMETER RetainedResourceGroupIds
+Optional. Resource groups that cleanup empties but never deletes, without subscription-scope deletions.
 #>
 function Invoke-ModuleDeploymentCleanup {
     [CmdletBinding()]
@@ -20,6 +23,7 @@ function Invoke-ModuleDeploymentCleanup {
         [string] $ManagementGroupId,
         [string] $ResourceGroupName,
         [string[]] $ProtectedResourceIds = @(),
+        [string[]] $RetainedResourceGroupIds = @(),
         [switch] $RequireCompleteRemoval
     )
 
@@ -72,6 +76,7 @@ function Invoke-ModuleDeploymentCleanup {
     }
     if ($SubscriptionId) { $inputObject.SubscriptionId = $SubscriptionId }
     if ($ResourceGroupName) { $inputObject.ResourceGroupName = $ResourceGroupName }
+    if ($RetainedResourceGroupIds.Count -gt 0) { $inputObject.RetainedResourceGroupIds = $RetainedResourceGroupIds }
     if ($RequireCompleteRemoval) {
         $inputObject.RequireCompleteRemoval = $true
         $inputObject.FinalCleanup = $true

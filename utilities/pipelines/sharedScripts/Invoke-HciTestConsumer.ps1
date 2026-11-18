@@ -1,7 +1,6 @@
 . (Join-Path $PSScriptRoot 'HciTestEnvironment.ps1')
 . (Join-Path $PSScriptRoot 'Get-CIParameterMap.ps1')
 . (Join-Path $PSScriptRoot 'Get-ModuleDeploymentData.ps1')
-. (Join-Path $PSScriptRoot '..' 'e2eValidation' 'resourceRemoval' 'helper' 'Remove-Deployment.ps1')
 
 function Initialize-HciTestConsumer {
     [CmdletBinding()]
@@ -66,11 +65,13 @@ function Initialize-HciTestConsumer {
     $owner = Get-HciEnvironmentKey -Value "$RunIdentity|$ModulePath|$($TestCase.path)"
     $context = Get-HciEnvironmentContext -RepoRootPath $RepoRootPath -SubscriptionId $subscription.id `
         -TenantId $TenantId -Owner $owner -HciHostImageReferenceId $externalImageId
-    $testGroupName = "dep-avm-hci-$($owner.Substring(0, 20))"
+    $testGroupName = $context.Config.testResourceGroupName
     if ($parameters.resourceGroupName -and $parameters.resourceGroupName -cne $testGroupName) {
-        throw 'Reserved Azure Local tests cannot override their per-run disposable resource group.'
+        throw 'Reserved Azure Local tests cannot override their fixed test resource group.'
     }
-    $context.TestResourceGroupId = "/subscriptions/$($context.SubscriptionId)/resourceGroups/$testGroupName"
+    if (@(Get-HciTestResourceGroupContent -Context $context).Count -gt 0) {
+        throw 'The fixed HCI test resource group is not empty. Remove the resources an earlier test left before reuse.'
+    }
     $context | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $contextFile -Encoding utf8NoBOM
 
     $result = Enter-HciEnvironmentTest -Context $context -ImageOnly:$imageOnly
@@ -88,6 +89,8 @@ function Initialize-HciTestConsumer {
     @{
         parameterOverrides = $overrides
         protectedResourceIds = @($context.GroupIds.control) + $context.OwnedGroupIds + @($context.ImageVersionResourceId)
+        # The CI may not delete resource groups: cleanup removes the test's resources and keeps its group.
+        retainedResourceGroupIds = @($context.TestResourceGroupId)
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $dataFile -Encoding utf8NoBOM
     $data = Get-ModuleDeploymentData -FilePath $dataFile
     $null = Resolve-ModuleDeploymentParameterOverride -ParameterOverrides $data.ParameterOverrides `
@@ -106,18 +109,17 @@ function Complete-HciTestConsumer {
         throw "Shared environment ownership is retained: deployment outcome [$DeploymentOutcome], cleanup status [$CleanupStatus]. Resolve the failed or unconfirmed test before reuse."
     }
     $context = Get-Content -LiteralPath $ContextFile -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable
-    if ($context.Owner -cnotmatch '^[a-f0-9]{64}$' -or
-        $context.TestResourceGroupId -cne "/subscriptions/$($context.SubscriptionId)/resourceGroups/dep-avm-hci-$($context.Owner.Substring(0, 20))") {
-        throw 'The consumer context does not identify its exact disposable resource group.'
+    if ($context.Owner -cnotmatch '^[a-f0-9]{64}$' -or $context.Config -isnot [System.Collections.IDictionary] -or
+        $context.TestResourceGroupId -cne "/subscriptions/$($context.SubscriptionId)/resourceGroups/$($context.Config.testResourceGroupName)") {
+        throw 'The consumer context does not identify its fixed test resource group.'
     }
     $registry = Get-HciEnvironmentRegistry -Context $context -RequireOwner
     if ($null -eq $registry -or $registry.tags['avm-state'] -cne 'InUse' -or
         $registry.tags['avm-active-owner'] -cne $context.Owner) {
         throw 'The shared environment is not owned by this test consumer.'
     }
-    $absent = Test-CleanupResourceAbsent -ResourceId $context.TestResourceGroupId
-    if ($absent -isnot [bool] -or -not $absent) {
-        throw 'The disposable HCI test group was not confirmed absent; ownership is retained.'
+    if (-not (Wait-HciTestResourceGroupEmpty -Context $context)) {
+        throw 'The fixed HCI test resource group was not confirmed empty; ownership is retained.'
     }
     Exit-HciEnvironment -Context $context -CleanupConfirmed:$true
 }

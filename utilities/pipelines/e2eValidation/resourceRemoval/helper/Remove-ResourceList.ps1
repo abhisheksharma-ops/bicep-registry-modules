@@ -12,6 +12,9 @@ Mandatory. The resource(s) to remove. Each resource must have a type & resourceI
 .PARAMETER RequireCompleteRemoval
 Optional. Preserve each resource's subscription context and require complete post-removal handling.
 
+.PARAMETER SkipPostRemoval
+Optional. Leave soft-deleted copies and other post-removal artifacts in place. Purging and listing them needs subscription-wide permissions.
+
 .EXAMPLE
 Remove-ResourceListInner -ResourcesToRemove @( @{ Type = 'Microsoft.Storage/storageAccounts'; ResourceId = 'subscriptions/.../storageAccounts/resourceName' } )
 #>
@@ -23,7 +26,10 @@ function Remove-ResourceListInner {
         [Hashtable[]] $ResourcesToRemove = @(),
 
         [Parameter()]
-        [switch] $RequireCompleteRemoval
+        [switch] $RequireCompleteRemoval,
+
+        [Parameter()]
+        [switch] $SkipPostRemoval
     )
 
     begin {
@@ -88,7 +94,7 @@ function Remove-ResourceListInner {
                 }
 
                 # We want to purge resources even if they were not explicitly removed because they were 'alreadyProcessed'
-                if ($PSCmdlet.ShouldProcess(('Post-resource-removal for [{0}]' -f $resource.resourceId), 'Execute')) {
+                if (-not $SkipPostRemoval -and $PSCmdlet.ShouldProcess(('Post-resource-removal for [{0}]' -f $resource.resourceId), 'Execute')) {
                     Invoke-ResourcePostRemoval -Type $resource.type -ResourceId $resource.resourceId -RequireCompleteRemoval:$RequireCompleteRemoval
                 }
             } catch {
@@ -130,6 +136,9 @@ Optional. The array of resources to remove. Has to contain objects with at least
 .PARAMETER RequireCompleteRemoval
 Optional. Use strict post-removal handling and restore subscription context before returning.
 
+.PARAMETER SkipPostRemoval
+Optional. Leave soft-deleted copies and other post-removal artifacts in place. Purging and listing them needs subscription-wide permissions.
+
 .EXAMPLE
 Remove-ResourceList @( @{ Type = 'Microsoft.Storage/storageAccounts'; ResourceId = 'subscriptions/.../storageAccounts/resourceName' } )
 
@@ -149,7 +158,10 @@ function Remove-ResourceList {
         [int] $RemovalRetryInterval = 15,
 
         [Parameter()]
-        [switch] $RequireCompleteRemoval
+        [switch] $RequireCompleteRemoval,
+
+        [Parameter()]
+        [switch] $SkipPostRemoval
     )
 
     $removalRetryCount = 1
@@ -157,9 +169,9 @@ function Remove-ResourceList {
 
     do {
         if ($PSCmdlet.ShouldProcess(("[{0}] Resource(s) with a maximum of [$removalRetryLimit] attempts." -f (($resourcesToRetry -is [array]) ? $resourcesToRetry.Count : 1)), 'Remove')) {
-            $resourcesToRetry = Remove-ResourceListInner -ResourcesToRemove $resourcesToRetry -RequireCompleteRemoval:$RequireCompleteRemoval
+            $resourcesToRetry = Remove-ResourceListInner -ResourcesToRemove $resourcesToRetry -RequireCompleteRemoval:$RequireCompleteRemoval -SkipPostRemoval:$SkipPostRemoval
         } else {
-            Remove-ResourceListInner -ResourcesToRemove $resourcesToRemove -WhatIf
+            Remove-ResourceListInner -ResourcesToRemove $resourcesToRemove -SkipPostRemoval:$SkipPostRemoval -WhatIf
         }
 
         if (-not $resourcesToRetry) {

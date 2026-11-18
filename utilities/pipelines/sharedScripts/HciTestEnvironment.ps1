@@ -99,6 +99,11 @@ function Get-HciEnvironmentContext {
         @($groupNames | Where-Object { $_ -isnot [string] -or $_ -cnotmatch '^rg-avm-ci-azure-local-[a-z-]+$' }).Count -gt 0) {
         throw 'The environment must have four distinct, explicitly named CI-owned resource groups.'
     }
+    # Tests run one at a time in a fixed, pre-created group that the CI empties but never creates or deletes.
+    if ($config.testResourceGroupName -isnot [string] -or $config.testResourceGroupName -cnotmatch '^rg-avm-ci-azure-local-[a-z-]+$' -or
+        $config.testResourceGroupName -in $groupNames) {
+        throw 'The environment must name a separate, pre-created CI test resource group.'
+    }
     foreach ($name in @('galleryName', 'imageDefinitionName', 'imageTemplateName', 'imageBuilderIdentityName', 'clusterName', 'customLocationName', 'logicalNetworkName', 'deploymentName')) {
         if ($config[$name] -isnot [string] -or $config[$name] -cnotmatch '^[a-z][a-z0-9-]{0,63}$') {
             throw "Invalid explicit environment name [$name]."
@@ -157,6 +162,7 @@ function Get-HciEnvironmentContext {
         ImageVersionResourceId  = $imageId
         ImageTemplateResourceId = "$($groupIds.image)/providers/Microsoft.VirtualMachineImages/imageTemplates/$($config.imageTemplateName)"
         DeploymentResourceId    = "$($groupIds.foundation)/providers/Microsoft.Resources/deployments/$($config.deploymentName)"
+        TestResourceGroupId     = "$subscriptionRoot/resourceGroups/$($config.testResourceGroupName)"
     }
 }
 
@@ -765,6 +771,38 @@ function Remove-HciClusterDeploymentAccess {
             }
         }
     }
+}
+
+function Get-HciTestResourceGroupContent {
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)] [hashtable] $Context)
+
+    if ($null -eq (Get-HciArmResource -ResourceId $Context.TestResourceGroupId -ApiVersion '2024-03-01' -AllowNotFound)) {
+        throw 'The fixed HCI test resource group does not exist. An administrator creates it once; the CI never creates or deletes it.'
+    }
+    return @(Get-AzResource -ResourceGroupName $Context.Config.testResourceGroupName -ErrorAction Stop)
+}
+
+function Wait-HciTestResourceGroupEmpty {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory)] [hashtable] $Context,
+        [ValidateRange(1, 120)] [int] $Attempts = 60,
+        [ValidateRange(0, 300)] [int] $IntervalSeconds = 30
+    )
+
+    # Deployment scripts delete their storage account and container group asynchronously after the script resource.
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $remaining = @(Get-HciTestResourceGroupContent -Context $Context)
+        if ($remaining.Count -eq 0) { return $true }
+        if ($attempt -lt $Attempts) {
+            $types = ($remaining | Group-Object -Property ResourceType | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', '
+            Write-Verbose "The fixed test resource group still contains [$types]; checking again in [$IntervalSeconds] seconds [$attempt/$Attempts]." -Verbose
+            Start-Sleep -Seconds $IntervalSeconds
+        }
+    }
+    return $false
 }
 
 function Enter-HciEnvironmentTest {
