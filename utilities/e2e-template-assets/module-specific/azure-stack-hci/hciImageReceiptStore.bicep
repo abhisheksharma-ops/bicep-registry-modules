@@ -88,7 +88,7 @@ resource receiptAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-@description('The separate HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT workflow variable value.')
+@description('The separate HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT workflow value. Store it as an environment secret to keep it out of logs.')
 output storageAccountName string = receiptAccount.name
 
 @description('The exact persistent receipt account resource ID.')

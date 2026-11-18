@@ -22,9 +22,6 @@ param galleryImageDefinitionResourceId string
 @description('Required. Deterministic gallery image version.')
 param imageVersion string
 
-@description('Required. Base URI containing this asset and the authoritative HCI host scripts.')
-param assetBaseUri string
-
 @description('Required. Download URL for the Azure Stack HCI VHDX payload.')
 param hciVhdxDownloadUri string
 
@@ -56,7 +53,15 @@ var requiredReplicationRegions = union(
   map(replicationRegions, region => toLower(replace(region, ' ', '')))
 )
 
-var stage1ScriptUri = '${assetBaseUri}/azureStackHCIHost/scripts/hciHostStage1.ps1'
+// Embedded rather than downloaded, so the build doesn't need the source commit to be publicly reachable.
+var encodedPrerequisiteScript = base64(loadTextContent('azureStackHCIHost/scripts/hciHostStage1.ps1'))
+var prerequisiteInstall = [
+  '$ErrorActionPreference = \'Stop\''
+  '$scriptPath = Join-Path $env:TEMP \'hciHostStage1.ps1\''
+  '[System.IO.File]::WriteAllText($scriptPath, [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${encodedPrerequisiteScript}\')))'
+  '& $scriptPath'
+]
+
 var encodedPayloadUri = base64(hciVhdxDownloadUri)
 var encodedPayloadSha256 = base64(hciVhdxSha256)
 var payloadDownload = [
@@ -129,7 +134,7 @@ resource imageTemplate 'Microsoft.VirtualMachineImages/imageTemplates@2025-10-01
         name: 'InstallHciHostPrerequisites'
         runElevated: true
         runAsSystem: true
-        scriptUri: stage1ScriptUri
+        inline: prerequisiteInstall
       }
       {
         type: 'WindowsRestart'

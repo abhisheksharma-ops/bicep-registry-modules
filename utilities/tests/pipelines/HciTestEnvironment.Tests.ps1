@@ -230,8 +230,8 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         $context.ImageVersionResourceId | Should -Not -Match 'persistent'
         $context.Tags.lifecycle | Should -Be 'tenant-persistent'
         $context.GroupIds.Values | Sort-Object -Unique | Should -HaveCount 4
-        $context.Config.hciVhdxDownloadUri | Should -BeExactly 'https://jumpstartprodsg.blob.core.windows.net/jslocal/localbox/prod/AzLocal2601.vhdx'
-        $context.Config.hciVhdxSha256 | Should -BeExactly '3a797826d7e7ae7abc55d1071322ddecc80575c2356fea9e74818ab9f6720a1f'
+        $context.Config.hciVhdxDownloadUri | Should -BeExactly 'https://azlocalvhds.blob.core.windows.net/images/AzLocal2608.vhdx'
+        $context.Config.hciVhdxSha256 | Should -BeExactly 'cd670067f6b07dea2d1a4e7219bf00492de2591557a754a9ed0f13f0b01bfdc5'
     }
 
     It 'Rejects an invalid payload <field> before resource access' -ForEach @(
@@ -354,7 +354,7 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
     }
 
     It 'Rejects mutable image aliases before any resource access' {
-        { Get-HciEnvironmentContext @inputObject -HciHostImageReferenceId ($context.ImageVersionResourceId -replace '26\.1\.0$', 'latest') } |
+        { Get-HciEnvironmentContext @inputObject -HciHostImageReferenceId ($context.ImageVersionResourceId -replace '/versions/[^/]+$', '/versions/latest') } |
             Should -Throw '*immutable*'
         Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly
     }
@@ -1333,6 +1333,79 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
 
         Should -Invoke bicep -Times 0 -Exactly
         Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Method -eq 'PUT' }
+    }
+
+    Context 'Cluster deployment identity grants' {
+        BeforeEach {
+            $foundationId = $context.GroupIds.foundation
+            $identityId = "$foundationId/providers/Microsoft.ManagedIdentity/userAssignedIdentities/temp-$($context.Config.clusterName)"
+            $principalId = '55555555-5555-5555-5555-555555555555'
+            $assignmentRoot = "$foundationId/providers/Microsoft.Authorization/roleAssignments"
+            function New-OfflineAssignment([string] $Name, [string] $Role, [string] $Scope = $foundationId) {
+                $id = "$Scope/providers/Microsoft.Authorization/roleAssignments/$Name"
+                $script:resources[$id] = @{
+                    id = $id
+                    properties = @{
+                        principalId = $principalId
+                        scope = $Scope
+                        roleDefinitionId = "/subscriptions/$($context.SubscriptionId)/providers/Microsoft.Authorization/roleDefinitions/$Role"
+                    }
+                }
+                return $script:resources[$id]
+            }
+        }
+
+        It 'Removes only the module identity''s Contributor, Reader and RBAC Administrator grants on the foundation group' {
+            $script:resources[$identityId] = @{ id = $identityId; properties = @{ principalId = $principalId } }
+            $removed = @(
+                New-OfflineAssignment '00000000-0000-0000-0000-00000000c001' 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+                New-OfflineAssignment '00000000-0000-0000-0000-00000000c002' 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
+                New-OfflineAssignment '00000000-0000-0000-0000-00000000c003' 'f58310d9-a9f6-439a-9e8d-f62e7b41a168'
+            )
+            $kept = @(
+                New-OfflineAssignment '00000000-0000-0000-0000-00000000c004' '4633458b-17de-408a-b874-0445c86b69e6'
+                New-OfflineAssignment '00000000-0000-0000-0000-00000000c005' 'b24988ac-6180-42a0-ab88-20f7382dd24c' "/subscriptions/$($context.SubscriptionId)"
+            )
+            $script:resources[$assignmentRoot] = @{ value = @($removed + $kept) }
+
+            Remove-HciClusterDeploymentAccess -Context $context
+
+            @($script:deleted | Sort-Object) | Should -Be @($removed.id | Sort-Object)
+        }
+
+        It 'Changes nothing when the module identity doesn''t exist' {
+            Remove-HciClusterDeploymentAccess -Context $context
+
+            Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Path -like '*/roleAssignments*' }
+            $script:deleted.Count | Should -Be 0
+        }
+
+        It 'Removes nothing when the grants can''t be listed completely (<case>)' -ForEach @(
+            @{ case = 'paged response'; paged = $true }
+            @{ case = 'failed lookup'; paged = $false }
+        ) {
+            $script:resources[$identityId] = @{ id = $identityId; properties = @{ principalId = $principalId } }
+            $assignment = New-OfflineAssignment '00000000-0000-0000-0000-00000000c001' 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+            if ($paged) { $script:resources[$assignmentRoot] = @{ value = @($assignment); nextLink = 'https://example.test/next' } }
+
+            { Remove-HciClusterDeploymentAccess -Context $context } | Should -Throw '*could not be listed completely*'
+            $script:deleted.Count | Should -Be 0
+        }
+
+        It 'Removes the grants after readiness and before releasing setup ownership' {
+            $script:order = [System.Collections.Generic.List[string]]::new()
+            Mock Get-HciEnvironmentReadiness { $script:order.Add('readiness'); @{ OwnedResourceIds = @() } }
+            Mock Remove-HciClusterDeploymentAccess { $script:order.Add('remove') }
+            Mock Exit-HciEnvironment { $script:order.Add('release') }
+            $key = Get-HciEnvironmentKey -Value $context.SubscriptionId
+            $pool = ConvertTo-Json -InputObject @(@{ id = $context.SubscriptionId; name = 'offline-reserved'; tag = 'Azure Local' }) -Compress
+
+            $null = Invoke-HciPreparationStep -Stage Ready -RepoRootPath $RepoRootPath -ModulePath 'avm/res/azure-stack-hci/logical-network' `
+                -TestCase @{ path = 'tests/e2e/defaults'; subscriptionIndex = 0; subscriptionKey = $key; environmentConcurrencyGroup = "avm-hci-$key" } `
+                -TestSubscriptionIds $pool -TenantId $context.TenantId -RunIdentity 'offline' -SourceCommit ('b' * 40) -Maintenance:$true
+
+            @($script:order) | Should -Be @('readiness', 'remove', 'release')
+        }
     }
 }
 
