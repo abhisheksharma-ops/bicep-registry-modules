@@ -343,4 +343,38 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $builder.resources.stagingRoleAssignment.resourceGroup | Should -Be "[parameters('stagingResourceGroupName')]"
         $foundation.parameters.generation | Should -Not -BeNullOrEmpty
     }
+
+    It 'Grants the cluster module''s resource-provider roles before the host waits for the node extensions' {
+        $foundation = $compiled['foundation.bicep']
+        Get-ParameterExpression $foundation.resources.dependencies.properties.parameters.hciResourceProviderObjectId |
+            Should -Be "[parameters('builtInServicePrincipalObjectId')]"
+        $hostDeployment = $foundation.resources.dependencies.properties.template.resources.hciHostDeployment
+        Get-ParameterExpression $hostDeployment.properties.parameters.hciResourceProviderObjectId |
+            Should -Be "[parameters('hciResourceProviderObjectId')]"
+        $getResources = { param($Template) $Template.resources -is [System.Collections.IDictionary] ? @($Template.resources.Values) : @($Template.resources) }
+        $hostResources = & $getResources $hostDeployment.properties.template
+        $hostRoleNames = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.name -match 'hciResourceProviderObjectId' } | ForEach-Object { $_.name })
+        $clusterRoleNames = @(& $getResources $foundation.resources.cluster.properties.template | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.name -match 'hciResourceProviderObjectId' } | ForEach-Object { $_.name })
+        $hostRoleNames.Count | Should -Be 4
+        $hostRoleNames | Sort-Object | Should -Be ($clusterRoleNames | Sort-Object)
+        $stage7 = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Compute/virtualMachines/runCommands' -and $_.name -match 'runCommand7' })
+        $stage7.Count | Should -Be 1
+        foreach ($pattern in @(
+                '^nodeAzureConnectedMachineResourceManagerRolePermissions$'
+                '^nodeAzureStackHCIDeviceManagementRole$'
+                '^nodeReaderRolePermissions$'
+                "^spConnectedMachineResourceManagerRolePermissions$|'ConnectedMachineResourceManagerRolePermissions'"
+            )) {
+            @($stage7[0].dependsOn | Where-Object { $_ -match $pattern }).Count | Should -Be 1
+        }
+        ($stage7[0].properties.parameters | Where-Object name -EQ 'ensureEdgeDevices').value |
+            Should -Be "[string(variables('createHciResourceProviderRoleAssignments'))]"
+    }
+
+    It 'Gives the cluster resource the same name as its Active Directory name, within 15 characters' {
+        $cluster = $compiled['foundation.bicep'].resources.cluster
+        $cluster.properties.template.parameters.clusterADName.maxLength | Should -Be 15
+        @($cluster.properties.parameters.Keys) | Should -Not -Contain 'clusterADName'
+        $environment.clusterName.Length | Should -BeLessOrEqual 15
+    }
 }

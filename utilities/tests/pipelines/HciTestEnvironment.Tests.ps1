@@ -309,6 +309,17 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         Should -Invoke New-AzResourceGroup -Times 0 -Exactly
     }
 
+    It 'Rejects a cluster name that Azure Local cannot register under its Active Directory name' {
+        $script:unsupportedConfig = $context.Config.Clone()
+        $script:unsupportedConfig.clusterName = 'a' * 16
+        Mock Get-Content { $script:unsupportedConfig | ConvertTo-Json } -ParameterFilter { $LiteralPath -like '*environment.json' }
+
+        { Get-HciEnvironmentContext @inputObject } | Should -Throw '*cluster name must be at most 15 characters*'
+
+        Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly
+        Should -Invoke New-AzResourceGroup -Times 0 -Exactly
+    }
+
     It 'Accepts a fork-owned tenant and subscription without an upstream publisher identity' {
         $script:current.Subscription.Id = '99999999-9999-9999-9999-999999999999'
         $script:current.Tenant.Id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
