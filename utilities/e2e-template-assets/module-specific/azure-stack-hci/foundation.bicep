@@ -66,6 +66,7 @@ module dependencies 'dependencies/dependencies.bicep' = {
     localAdminPassword: arbLocalAdminAndDeploymentUserPass
     hciHostImageReferenceId: hciHostImageReferenceId
     assignSubscriptionContributor: false
+    hciResourceProviderObjectId: builtInServicePrincipalObjectId
   }
 }
 

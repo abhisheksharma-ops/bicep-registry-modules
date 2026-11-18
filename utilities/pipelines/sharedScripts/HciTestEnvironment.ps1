@@ -104,6 +104,10 @@ function Get-HciEnvironmentContext {
             throw "Invalid explicit environment name [$name]."
         }
     }
+    # Azure Local registers the cluster under its Active Directory name, so the Azure resource must use that same name.
+    if ($config.clusterName.Length -gt 15) {
+        throw 'The cluster name must be at most 15 characters: Azure Local registers the cluster under its Active Directory name.'
+    }
     $subscriptionRoot = "/subscriptions/$($SubscriptionId.ToString('D'))"
     $groupIds = @{}
     foreach ($kind in @('control', 'foundation', 'image', 'staging')) {
