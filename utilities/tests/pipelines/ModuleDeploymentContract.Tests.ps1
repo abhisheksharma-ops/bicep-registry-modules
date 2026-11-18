@@ -152,8 +152,20 @@ Describe 'Neutral module deployment data' {
         $result = Get-ModuleDeploymentData
         $result.ParameterOverrides.Count | Should -Be 0
         $result.ProtectedResourceIds.Count | Should -Be 0
+        $result.RetainedResourceGroupIds.Count | Should -Be 0
         $resolved = Resolve-ModuleDeploymentParameterOverride -ParameterOverrides @{} -TemplateParameters @{}
         $resolved.Count | Should -Be 0
+    }
+
+    It 'Reads retained resource groups next to protected resources outside them' {
+        $retainedId = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/retained-neutral-fixture'
+        @{ protectedResourceIds = @($protectedId); retainedResourceGroupIds = @($retainedId) } |
+            ConvertTo-Json | Set-Content -LiteralPath $dataPath
+
+        $data = Get-ModuleDeploymentData -FilePath $dataPath
+
+        $data.RetainedResourceGroupIds | Should -Be @($retainedId)
+        $data.ProtectedResourceIds | Should -Be @($protectedId)
     }
 
     It 'Resolves a non-HCI fixture through ordinary ARM types without logging its secret' {
@@ -198,6 +210,10 @@ Describe 'Neutral module deployment data' {
         @{ kind = 'incomplete provider identity'; json = '{"protectedResourceIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared/providers/Microsoft.Compute"]}' }
         @{ kind = 'missing provider prefix'; json = '{"protectedResourceIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared/virtualMachines/host"]}' }
         @{ kind = 'ambiguous resource identity'; json = '{"protectedResourceIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/../shared"]}' }
+        @{ kind = 'non-array retention'; json = '{"retainedResourceGroupIds":"not-an-array"}' }
+        @{ kind = 'retention of a resource'; json = '{"retainedResourceGroupIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared/providers/Microsoft.KeyVault/vaults/neutral"]}' }
+        @{ kind = 'duplicate retention'; json = '{"retainedResourceGroupIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared","/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/SHARED"]}' }
+        @{ kind = 'protection inside retention'; json = '{"retainedResourceGroupIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared"],"protectedResourceIds":["/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/shared/providers/Microsoft.KeyVault/vaults/neutral"]}' }
     ) {
         $json | Set-Content -LiteralPath $dataPath
         $failure = $null
@@ -214,6 +230,66 @@ Describe 'Neutral module deployment data' {
     It 'Rejects invalid parameter types using the existing conversion rules' {
         { Resolve-ModuleDeploymentParameterOverride -ParameterOverrides @{ retryCount = 'not-an-integer' } -TemplateParameters $parameters } |
             Should -Throw '*type*int*'
+    }
+}
+
+Describe 'Resource-group-scoped cleanup' {
+    BeforeAll {
+        . (Join-Path $RepoRootPath 'utilities' 'pipelines' 'e2eValidation' 'resourceRemoval' 'Initialize-DeploymentRemoval.ps1')
+        . (Join-Path $RepoRootPath 'utilities' 'pipelines' 'e2eValidation' 'resourceRemoval' 'helper' 'Remove-Deployment.ps1')
+        . (Join-Path $RepoRootPath 'utilities' 'pipelines' 'e2eValidation' 'resourceRemoval' 'helper' 'Remove-ResourceList.ps1')
+        . (Join-Path $RepoRootPath 'utilities' 'pipelines' 'e2eValidation' 'resourceRemoval' 'helper' 'Invoke-ResourceRemoval.ps1')
+        . (Join-Path $RepoRootPath 'utilities' 'pipelines' 'e2eValidation' 'resourceRemoval' 'helper' 'Invoke-ResourcePostRemoval.ps1')
+        function Get-AzContext {}
+        function Invoke-AzRestMethod { param ($Method, $Path) }
+    }
+
+    BeforeEach {
+        $subscriptionId = '11111111-1111-1111-1111-111111111111'
+        $groupId = "/subscriptions/$subscriptionId/resourceGroups/retained-neutral-fixture"
+        $vaultId = "$groupId/providers/Microsoft.KeyVault/vaults/neutral-vault"
+        $script:deletedRecords = [System.Collections.Generic.List[string]]::new()
+        Mock Get-AzContext { @{ Subscription = @{ Id = $subscriptionId } } }
+        Mock Start-Sleep {}
+        Mock Invoke-AzRestMethod {
+            $script:deletedRecords.Add($Path.Split('?')[0])
+            @{ StatusCode = 202; Content = '' }
+        } -ParameterFilter { $Method -eq 'DELETE' }
+    }
+
+    It 'Removes a retained group''s deployed contents without deleting the group or purging' {
+        Mock Remove-ResourceList { $script:removal = @{ Ids = @($ResourcesToRemove.resourceId); SkipPostRemoval = [bool] $SkipPostRemoval } }
+
+        Initialize-DeploymentRemoval -ResourceIds @($groupId, $vaultId) -RetainedResourceGroupIds $groupId
+
+        $script:removal.Ids | Should -Be @($vaultId)
+        $script:removal.SkipPostRemoval | Should -BeTrue
+    }
+
+    It 'Keeps subscription-scope deployment records and deletes the records inside the retained group' {
+        Mock Test-CleanupResourceAbsent { $true }
+        $rootId = "/subscriptions/$subscriptionId/providers/Microsoft.Resources/deployments/neutral-fixture"
+        $nestedId = "$groupId/providers/Microsoft.Resources/deployments/neutral-nested"
+
+        Complete-DeploymentRemoval -ResourceIds @($vaultId) -DeploymentIds @($rootId, $nestedId) `
+            -DeploymentNamesById @{ $rootId = 'neutral-fixture' } -KeepSubscriptionDeploymentRecords
+
+        @($script:deletedRecords) | Should -Be @($nestedId)
+    }
+
+    It 'Skips soft-delete lookups and purges when post-removal is skipped' {
+        Mock Invoke-ResourceRemoval {}
+        Mock Invoke-ResourcePostRemoval { throw 'Post-removal must not run in resource-group-scoped cleanup.' }
+
+        Remove-ResourceList -ResourcesToRemove @(@{ resourceId = $vaultId; type = 'Microsoft.KeyVault/vaults' }) -SkipPostRemoval
+
+        Should -Invoke Invoke-ResourceRemoval -Times 1 -Exactly
+        Should -Invoke Invoke-ResourcePostRemoval -Times 0 -Exactly
+    }
+
+    It 'Rejects a retained identity that is not an exact resource group' {
+        { Initialize-DeploymentRemoval -ResourceIds @($vaultId) -RetainedResourceGroupIds $vaultId } |
+            Should -Throw '*exact resource group IDs*'
     }
 }
 

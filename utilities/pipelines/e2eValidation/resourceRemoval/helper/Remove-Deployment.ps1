@@ -108,7 +108,8 @@ function Complete-DeploymentRemoval {
         [string[]] $ResourceIds = @(),
         [string[]] $DeploymentIds = @(),
         [hashtable] $DeploymentNamesById = @{},
-        [string[]] $PendingDeletionDeploymentIds = @()
+        [string[]] $PendingDeletionDeploymentIds = @(),
+        [switch] $KeepSubscriptionDeploymentRecords
     )
 
     $removedNames = [System.Collections.Generic.List[string]]::new()
@@ -135,7 +136,10 @@ function Complete-DeploymentRemoval {
         }
         foreach ($deploymentId in $DeploymentIds) {
             $parentAbsent = @($absentParents | Where-Object { $deploymentId.StartsWith("$_/", [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
-            if (-not $parentAbsent) {
+            # Deleting a subscription-scope record needs subscription-wide permission; resource-group-scoped cleanup keeps it.
+            $keepRecord = $KeepSubscriptionDeploymentRecords -and
+                $deploymentId -match '^/subscriptions/[^/]+/providers/Microsoft\.Resources/deployments/[^/]+$'
+            if (-not $parentAbsent -and -not $keepRecord) {
                 if (-not $PSCmdlet.ShouldProcess($deploymentId, 'Remove completed deployment record')) {
                     throw 'Deployment record removal was not performed; regional relocation is blocked.'
                 }
@@ -215,6 +219,11 @@ Without this switch, complete cleanup continues to require failed roots before a
 Optional. Require complete discovery without deployment scripts before cleanup.
 Script deletion does not prove delayed support-resource callbacks have finished, so same-region replay remains unsafe.
 
+.PARAMETER RetainedResourceGroupIds
+Optional. Exact resource group IDs that cleanup never deletes; their deployed contents are still removed.
+For identities that may only work inside resource groups, cleanup then also keeps subscription-scope deployment
+records and soft-deleted resources, because deleting or purging them needs subscription-wide permissions.
+
 .OUTPUTS
 Strict removal returns RemovedDeploymentNames only after complete removal.
 If record removal partly succeeds before failing, Exception.Data.RemovedDeploymentNames identifies confirmed removed roots.
@@ -266,7 +275,10 @@ function Remove-Deployment {
         [switch] $RequireNoDeploymentScripts,
 
         [Parameter()]
-        [string[]] $ProtectedResourceIds = @()
+        [string[]] $ProtectedResourceIds = @(),
+
+        [Parameter()]
+        [string[]] $RetainedResourceGroupIds = @()
     )
 
     begin {
@@ -292,6 +304,9 @@ function Remove-Deployment {
         }
         if (@($PreflightRejectedDeploymentNames | Where-Object { $_ -notin $DeploymentNames }).Count -gt 0) {
             throw 'Preflight rejection metadata contains names outside the supplied deployments.'
+        }
+        if (@($RetainedResourceGroupIds | Where-Object { $_ -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+$' }).Count -gt 0) {
+            throw 'Cleanup retention requires exact resource group IDs.'
         }
         $azContext = Get-AzContext -ErrorAction Stop
 
@@ -353,6 +368,9 @@ function Remove-Deployment {
         }
 
         [array] $deployedTargetResources = $deployedTargetResources | Select-Object -Unique
+        if ($RetainedResourceGroupIds.Count -gt 0) {
+            [array] $deployedTargetResources = @($deployedTargetResources | Where-Object { $_ -notin $RetainedResourceGroupIds })
+        }
 
         foreach ($protectedId in $ProtectedResourceIds) {
             if ([string]::IsNullOrWhiteSpace($protectedId) -or -not $protectedId.StartsWith('/subscriptions/', [StringComparison]::OrdinalIgnoreCase)) {
@@ -381,6 +399,9 @@ function Remove-Deployment {
                 DeploymentNamesById          = @{}
                 PendingDeletionDeploymentIds = $PendingDeletionDeploymentIds
                 ErrorAction                  = 'Stop'
+            }
+            if ($RetainedResourceGroupIds.Count -gt 0) {
+                $completionInput.KeepSubscriptionDeploymentRecords = $true
             }
             foreach ($name in $originalDeploymentNames) {
                 $id = Get-DeploymentResourceId -Scope $deploymentScope -Name $name -SubscriptionId $azContext.Subscription.Id `
@@ -459,7 +480,9 @@ function Remove-Deployment {
         # ================
         if ($resourcesToRemove.Count -gt 0) {
             if ($PSCmdlet.ShouldProcess(('[{0}] resources' -f (($resourcesToRemove -is [array]) ? $resourcesToRemove.Count : 1)), 'Remove')) {
-                Remove-ResourceList -ResourcesToRemove $resourcesToRemove -RequireCompleteRemoval:$RequireCompleteRemoval
+                $removalInput = @{ ResourcesToRemove = $resourcesToRemove; RequireCompleteRemoval = $RequireCompleteRemoval }
+                if ($RetainedResourceGroupIds.Count -gt 0) { $removalInput.SkipPostRemoval = $true }
+                Remove-ResourceList @removalInput
             }
         } else {
             Write-Verbose 'Found [0] resources to remove'

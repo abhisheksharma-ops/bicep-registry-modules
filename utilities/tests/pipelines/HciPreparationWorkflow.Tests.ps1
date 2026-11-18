@@ -198,7 +198,9 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $consumerScript | Should -Match 'overrides\.hciHostImageReferenceId = \$result\.ImageVersionResourceId'
         $consumerScript | Should -Match 'overrides\.preparedHciEnvironment'
         $deployScript | Should -Match 'ProtectedResourceIds'
-        $consumerScript | Should -Match 'cannot override their per-run disposable resource group'
+        $deployScript | Should -Match 'RetainedResourceGroupIds'
+        $consumerScript | Should -Match 'cannot override their fixed test resource group'
+        $consumerScript | Should -Match 'retainedResourceGroupIds = @\(\$context\.TestResourceGroupId\)'
         $deployScript | Should -Not -Match 'Hci|Azure Local|Resolve-CIParameterFallback'
         $steps = @($consumer.jobs.job_module_deploy_validation.steps)
         $acquire = $steps | Where-Object id -EQ hci-consumer
@@ -215,10 +217,11 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $script = $cleanup.with.inlineScript
         $script | Should -Match 'Invoke-ModuleDeploymentCleanup'
         $script | Should -Match 'ProtectedResourceIds'
+        $script | Should -Match 'RetainedResourceGroupIds'
         $script | Should -Not -Match 'Hci|Azure Local'
-        $consumerScript | Should -Match 'Test-CleanupResourceAbsent -ResourceId \$context\.TestResourceGroupId'
+        $consumerScript | Should -Match 'Wait-HciTestResourceGroupEmpty -Context \$context'
         $consumerScript | Should -Match 'Exit-HciEnvironment -Context \$context -CleanupConfirmed:\$true'
-        $consumerScript.IndexOf('Test-CleanupResourceAbsent') | Should -BeLessThan $consumerScript.IndexOf('Exit-HciEnvironment')
+        $consumerScript.IndexOf('Wait-HciTestResourceGroupEmpty') | Should -BeLessThan $consumerScript.IndexOf('Exit-HciEnvironment')
         $release = $consumer.jobs.job_module_deploy_validation.steps | Where-Object name -EQ 'Release only a successfully cleaned test environment'
         $release.if | Should -Match 'success\(\) \|\| failure\(\)'
         $release.if | Should -Not -Match 'always\(\)'

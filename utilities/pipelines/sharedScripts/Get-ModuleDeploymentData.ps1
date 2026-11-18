@@ -3,14 +3,16 @@
 Read optional runner-local deployment parameters and cleanup protection.
 
 .PARAMETER FilePath
-JSON file containing parameterOverrides (parameter names mapped to strings) and
-protectedResourceIds (exact subscription-scoped resource IDs). An omitted file adds no data.
+JSON file containing parameterOverrides (parameter names mapped to strings),
+protectedResourceIds (exact subscription-scoped resource IDs) and retainedResourceGroupIds
+(exact resource group IDs whose deployed contents cleanup removes while keeping the groups).
+An omitted file adds no data.
 #>
 function Get-ModuleDeploymentData {
     [CmdletBinding()]
     param ([string] $FilePath)
 
-    $result = @{ ParameterOverrides = @{}; ProtectedResourceIds = @() }
+    $result = @{ ParameterOverrides = @{}; ProtectedResourceIds = @(); RetainedResourceGroupIds = @() }
     if ([string]::IsNullOrEmpty($FilePath)) { return $result }
     if ([string]::IsNullOrWhiteSpace($FilePath) -or -not [IO.Path]::IsPathFullyQualified($FilePath) -or
         -not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
@@ -27,8 +29,8 @@ function Get-ModuleDeploymentData {
         }
         $fields = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         foreach ($property in $document.RootElement.EnumerateObject()) {
-            if ($property.Name -cnotin @('parameterOverrides', 'protectedResourceIds') -or -not $fields.Add($property.Name)) {
-                throw 'Deployment data permits only unique parameterOverrides and protectedResourceIds fields.'
+            if ($property.Name -cnotin @('parameterOverrides', 'protectedResourceIds', 'retainedResourceGroupIds') -or -not $fields.Add($property.Name)) {
+                throw 'Deployment data permits only unique parameterOverrides, protectedResourceIds and retainedResourceGroupIds fields.'
             }
             if ($property.Name -ceq 'parameterOverrides') {
                 if ($property.Value.ValueKind -ne 'Object') {
@@ -40,6 +42,25 @@ function Get-ModuleDeploymentData {
                         throw 'Deployment parameter overrides require unique parameter names and string values.'
                     }
                     $result.ParameterOverrides[$parameter.Name] = $parameter.Value.GetString()
+                }
+                continue
+            }
+            if ($property.Name -ceq 'retainedResourceGroupIds') {
+                if ($property.Value.ValueKind -ne 'Array') {
+                    throw 'Retained resource group IDs must be a JSON array.'
+                }
+                $groupIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                foreach ($item in $property.Value.EnumerateArray()) {
+                    if ($item.ValueKind -ne 'String') { throw 'Retained resource group IDs must be strings.' }
+                    $id = $item.GetString()
+                    $subscriptionId = [guid]::Empty
+                    if ($id -notmatch '^/subscriptions/(?<subscription>[^/]+)/resourceGroups/(?<group>[^/\r\n?#]+)$' -or
+                        -not [guid]::TryParseExact($Matches.subscription, 'D', [ref] $subscriptionId) -or
+                        $subscriptionId -eq [guid]::Empty -or $id -cne $id.Trim() -or
+                        $Matches.group -in @('.', '..') -or -not $groupIds.Add($id)) {
+                        throw 'Cleanup retention requires unique, exact resource group IDs.'
+                    }
+                    $result.RetainedResourceGroupIds += $id
                 }
                 continue
             }
@@ -58,6 +79,13 @@ function Get-ModuleDeploymentData {
                     throw 'Cleanup protection requires unique, exact subscription-scoped resource IDs.'
                 }
                 $result.ProtectedResourceIds += $id
+            }
+        }
+        foreach ($groupId in $result.RetainedResourceGroupIds) {
+            if (@($result.ProtectedResourceIds | Where-Object {
+                        $_ -ieq $groupId -or $_.StartsWith("$groupId/", [StringComparison]::OrdinalIgnoreCase)
+                    }).Count -gt 0) {
+                throw 'A retained resource group cannot contain protected resources.'
             }
         }
     } finally {

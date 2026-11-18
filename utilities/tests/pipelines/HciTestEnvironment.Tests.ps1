@@ -15,6 +15,7 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         function Update-AzTag { param ($ResourceId, $Operation, $Tag) }
         function Get-AzResourceGroupDeployment { param ($ResourceGroupName, $Name, $DefaultProfile) }
         function Get-AzAccessToken { param ([switch] $AsSecureString) }
+        function Get-AzResource { [CmdletBinding()] param ($ResourceGroupName) }
         function Add-Group($Id, $Tags) {
             $script:resources[$Id] = @{
                 id = $Id
@@ -268,6 +269,20 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         $changedContext = Get-HciEnvironmentContext @inputObject
 
         $changedContext.Tags['avm-contract'] | Should -Not -Be $context.Tags['avm-contract']
+    }
+
+    It 'Rejects a test resource group that is <case> before resource access' -ForEach @(
+        @{ case = 'missing'; value = $null }
+        @{ case = 'outside the CI naming'; value = 'rg-shared-tests' }
+        @{ case = 'an owned group'; value = 'rg-avm-ci-azure-local-foundation' }
+        @{ case = 'the control group'; value = 'rg-avm-ci-azure-local-control' }
+    ) {
+        $script:unsupportedConfig = $context.Config.Clone()
+        $script:unsupportedConfig.testResourceGroupName = $value
+        Mock Get-Content { $script:unsupportedConfig | ConvertTo-Json } -ParameterFilter { $LiteralPath -like '*environment.json' }
+
+        { Get-HciEnvironmentContext @inputObject } | Should -Throw '*separate, pre-created CI test resource group*'
+        Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly
     }
 
     It 'Blocks an old payload contract on the <kind> group without migrating it automatically' -ForEach @(
@@ -1023,6 +1038,15 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
             }
             Mock Start-HciEnvironmentPreparation { throw 'Consumer attempted setup.' }
             Mock Start-HciEnvironmentFoundation { throw 'Consumer attempted foundation provisioning.' }
+            Add-Group $context.TestResourceGroupId @{}
+            Mock Get-AzResource {
+                $prefix = "/subscriptions/$($script:current.Subscription.Id)/resourceGroups/$ResourceGroupName/providers/"
+                foreach ($key in @($script:resources.Keys)) {
+                    if ($key.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $key.Substring($prefix.Length).Split('/').Count -eq 3) {
+                        [pscustomobject]@{ ResourceId = $key; ResourceType = $key.Substring($prefix.Length).Split('/')[0..1] -join '/' }
+                    }
+                }
+            }
         }
 
         It 'Constructs ordinary parameter/protection data from a ready environment without saving credentials' {
@@ -1039,8 +1063,10 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
             $prepared.customLocationResourceId | Should -Be "$($context.GroupIds.foundation)/providers/Microsoft.ExtendedLocation/customLocations/$($context.Config.customLocationName)"
             $prepared.kubernetesVersion | Should -Be '1.32.6'
             $data.ParameterOverrides.hciHostImageReferenceId | Should -Be $context.ImageVersionResourceId
-            $data.ParameterOverrides.resourceGroupName | Should -Be "dep-avm-hci-$($savedContext.Owner.Substring(0, 20))"
+            $data.ParameterOverrides.resourceGroupName | Should -Be $context.Config.testResourceGroupName
+            $savedContext.TestResourceGroupId | Should -Be $context.TestResourceGroupId
             $data.ProtectedResourceIds | Should -Be (@($context.GroupIds.control) + $context.OwnedGroupIds + @($context.ImageVersionResourceId))
+            $data.RetainedResourceGroupIds | Should -Be @($context.TestResourceGroupId)
             $script:resources[$context.GroupIds.control].tags['avm-state'] | Should -Be 'InUse'
             ((Get-Content $dataFile, $contextFile -Raw) -join '') | Should -Not -Match 'credential-not-saved'
             ($messages | Out-String) | Should -Not -Match 'credential-not-saved'
@@ -1107,25 +1133,69 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
             Should -Invoke Update-AzTag -Times 1 -Exactly
         }
 
-        It 'Retains ownership when the exact disposable group remains after reported cleanup' {
+        It 'Retains ownership while the fixed test group still holds resources after reported cleanup' {
             Add-Registry -State Idle -FoundationState Ready
             Add-ReadyImage
             Add-ReadyFoundation
             Initialize-HciTestConsumer @consumerInput
-            $contextFile = Join-Path $runnerTemp 'avm-hci-test-context.json'
-            $savedContext = Get-Content $contextFile -Raw | ConvertFrom-Json -AsHashtable
-            Add-Group $savedContext.TestResourceGroupId @{}
+            $leftover = "$($context.TestResourceGroupId)/providers/Microsoft.Storage/storageAccounts/leftoverazscripts"
+            $script:resources[$leftover] = @{ id = $leftover }
 
-            { Complete-HciTestConsumer -ContextFile $contextFile -DeploymentOutcome success -CleanupStatus confirmed } |
-                Should -Throw '*not confirmed absent*'
+            { Complete-HciTestConsumer -ContextFile (Join-Path $runnerTemp 'avm-hci-test-context.json') `
+                    -DeploymentOutcome success -CleanupStatus confirmed } | Should -Throw '*not confirmed empty*'
 
             $script:resources[$context.GroupIds.control].tags['avm-state'] | Should -Be 'InUse'
             Should -Invoke Update-AzTag -Times 1 -Exactly
+            Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Method -eq 'DELETE' }
         }
 
-        It 'Rejects per-run group overrides and incorrect shared locks before acquisition' {
+        It 'Releases ownership once deployment-script support resources finish deleting' {
+            Add-Registry -State Idle -FoundationState Ready
+            Add-ReadyImage
+            Add-ReadyFoundation
+            Initialize-HciTestConsumer @consumerInput
+            $script:pollsWithLeftover = 2
+            Mock Get-AzResource {
+                if ($script:pollsWithLeftover-- -gt 0) {
+                    [pscustomobject]@{ ResourceId = 'leftoverazscripts'; ResourceType = 'Microsoft.ContainerInstance/containerGroups' }
+                }
+            }
+
+            Complete-HciTestConsumer -ContextFile (Join-Path $runnerTemp 'avm-hci-test-context.json') `
+                -DeploymentOutcome success -CleanupStatus confirmed
+
+            $script:resources[$context.GroupIds.control].tags['avm-state'] | Should -Be 'Idle'
+            Should -Invoke Start-Sleep -Times 2 -Exactly -ParameterFilter { $Seconds -eq 30 }
+        }
+
+        It 'Refuses to start a test while the fixed test group holds resources' {
+            Add-Registry -State Idle -FoundationState Ready
+            Add-ReadyImage
+            Add-ReadyFoundation
+            $leftover = "$($context.TestResourceGroupId)/providers/Microsoft.KeyVault/vaults/leftover"
+            $script:resources[$leftover] = @{ id = $leftover }
+
+            { Initialize-HciTestConsumer @consumerInput } | Should -Throw '*test resource group is not empty*'
+
+            Should -Invoke Update-AzTag -Times 0 -Exactly
+            Test-Path (Join-Path $runnerTemp 'avm-hci-test-context.json') | Should -BeFalse
+        }
+
+        It 'Requires the pre-created fixed test group and never creates it' {
+            Add-Registry -State Idle -FoundationState Ready
+            Add-ReadyImage
+            Add-ReadyFoundation
+            $script:resources.Remove($context.TestResourceGroupId)
+
+            { Initialize-HciTestConsumer @consumerInput } | Should -Throw '*fixed HCI test resource group does not exist*'
+
+            Should -Invoke New-AzResourceGroup -Times 0 -Exactly
+            Should -Invoke Update-AzTag -Times 0 -Exactly
+        }
+
+        It 'Rejects test group overrides and incorrect shared locks before acquisition' {
             $consumerInput.GitHubVariables = '{"CI_RESOURCEGROUPNAME":"some-other-group"}'
-            { Initialize-HciTestConsumer @consumerInput } | Should -Throw '*cannot override their per-run disposable resource group*'
+            { Initialize-HciTestConsumer @consumerInput } | Should -Throw '*cannot override their fixed test resource group*'
             $consumerInput.GitHubVariables = '{}'
             $consumerInput.TestCase.environmentConcurrencyGroup = 'not-the-shared-lock'
             { Initialize-HciTestConsumer @consumerInput } | Should -Throw '*canonical shared-environment lock*'

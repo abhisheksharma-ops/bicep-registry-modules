@@ -522,6 +522,9 @@ Optional. Maximum total deployment attempts across all regions, including failed
 .PARAMETER RemoveDeployment
 Optional. Allow intermediate cleanup and relocation. False preserves resources and only permits safe same-region retries.
 
+.PARAMETER RetainedResourceGroupIds
+Optional. Resource groups that intermediate cleanup empties but never deletes, without subscription-scope deletions.
+
 .PARAMETER ValidationOnly
 Optional. Validate without deployment and return the selected location.
 
@@ -563,6 +566,9 @@ function Invoke-TemplateDeploymentWithRetry {
 
         [Parameter()]
         [string[]] $ProtectedResourceIds = @(),
+
+        [Parameter()]
+        [string[]] $RetainedResourceGroupIds = @(),
 
         [Parameter()]
         [switch] $ValidationOnly,
@@ -753,6 +759,9 @@ function Invoke-TemplateDeploymentWithRetry {
                     }
                     if ($ProtectedResourceIds.Count -gt 0) {
                         $cleanupInput.ProtectedResourceIds = $ProtectedResourceIds
+                    }
+                    if ($RetainedResourceGroupIds.Count -gt 0) {
+                        $cleanupInput.RetainedResourceGroupIds = $RetainedResourceGroupIds
                     }
                     try {
                         $cleanup = Initialize-DeploymentRemoval @cleanupInput -ErrorAction Stop
