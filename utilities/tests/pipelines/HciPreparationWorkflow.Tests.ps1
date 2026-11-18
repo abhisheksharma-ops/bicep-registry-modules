@@ -148,10 +148,25 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $invoke.with.inlineScript | Should -Match ([regex]::Escape("-ModulePath 'avm/res/azure-stack-hci/logical-network'"))
         $invoke.with.inlineScript | Should -Match 'git rev-parse HEAD'
         $invoke.env.HCI_RUN_IDENTITY | Should -Be '${{ github.repository }}|${{ github.run_id }}|${{ github.run_attempt }}'
-        $invoke.env.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT | Should -Be '${{ vars.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT }}'
+        $invoke.env.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT | Should -Be '${{ vars.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT || secrets.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT }}'
         $invoke.env.CI_KEY_VAULT_NAME | Should -Be '${{ vars.CI_KEY_VAULT_NAME }}'
         $invoke.with.inlineScript | Should -Match ([regex]::Escape('-ReceiptStorageAccountName $env:HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT'))
         $invoke.with.inlineScript | Should -Match ([regex]::Escape('-KeyVaultName $env:CI_KEY_VAULT_NAME'))
+    }
+
+    It 'Masks the subscription, tenant, client and receipt identifiers before signing in' {
+        $jobSteps = @{ prepare = @($prepareSteps); consumer = @($consumer.jobs.job_module_deploy_validation.steps) }
+        foreach ($steps in $jobSteps.Values) {
+            $resolve = $steps | Where-Object id -EQ subscription
+            $login = $steps | Where-Object { $_.uses -like 'azure/login@*' }
+            [array]::IndexOf($steps, $resolve) | Should -BeLessThan ([array]::IndexOf($steps, $login))
+            $resolve.env.VALIDATE_CLIENT_ID | Should -Be '${{ vars.VALIDATE_CLIENT_ID || secrets.VALIDATE_CLIENT_ID }}'
+            $resolve.run | Should -Match '\[string\] \$env:VALIDATE_CLIENT_ID'
+            $resolve.run | Should -Match '::add-mask::'
+        }
+        $receipt = $prepareSteps | Where-Object id -EQ subscription
+        $receipt.env.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT | Should -Be '${{ vars.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT || secrets.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT }}'
+        $receipt.run | Should -Match '\[string\] \$env:HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT'
     }
 
     It 'Keeps private receipt storage out of generic deployments and HCI consumers' {
@@ -313,6 +328,8 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $vault[0].properties.enableRbacAuthorization | Should -BeTrue
         # Key Vault rejects an explicit false; omitting the property leaves purge protection off.
         $vault[0].properties.Contains('enablePurgeProtection') | Should -BeFalse
+        # A deleted vault keeps its name until purged, and reserved tests have no purge permission.
+        $vault[0].name | Should -Match "uniqueString\(deployment\(\)\.name, resourceGroup\(\)\.id\)"
         $max = $compiled['avm/res/hybrid-container-service/provisioned-cluster-instance/tests/e2e/max/main.test.bicep']
         Get-ParameterExpression $max.resources.testDeployment.properties.parameters.kubernetesVersion | Should -Match 'kubernetesVersion'
         Get-ParameterExpression $max.resources.testDeployment.properties.parameters.kubernetesVersion | Should -Not -Match '1\.29\.4'
@@ -380,7 +397,7 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $reader = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Resources/deployments' -and $_.name -match 'arcMachineIdentities' })
         $reader.Count | Should -Be 1
         @($reader[0].dependsOn | Where-Object { $_ -match "'runCommand6'" }).Count | Should -Be 1
-        $nodeRoles = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.copy })
+        $nodeRoles = @($hostResources | Where-Object { $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.copy -and $_.name -match 'hciResourceProviderObjectId' })
         $nodeRoles.Count | Should -Be 3
         foreach ($role in $nodeRoles) {
             $role.properties.principalId | Should -Match "arcMachineIdentities'.*\.outputs\.principalIds\.value\[copyIndex\(\)\]"
@@ -411,5 +428,28 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
         $vm.Count | Should -Be 1
         $vm[0].properties.osProfile.windowsConfiguration.enableAutomaticUpdates | Should -Be "[parameters('enableScheduledPatching')]"
         $vm[0].properties.osProfile.windowsConfiguration.patchSettings | Should -Match "parameters\('enableScheduledPatching'\).*'Manual'"
+    }
+
+    It 'Grants the foundation host identity the Arc registration and edge-device roles instead of Owner' {
+        $dependencies = $compiled['foundation.bicep'].resources.dependencies
+        $dependencies.properties.parameters.assignResourceGroupOwner.value | Should -BeFalse
+        $hostDeployment = $dependencies.properties.template.resources.hciHostDeployment
+        Get-ParameterExpression $hostDeployment.properties.parameters.assignResourceGroupOwner |
+            Should -Be "[parameters('assignResourceGroupOwner')]"
+        $hostTemplate = $hostDeployment.properties.template
+        $hostResources = $hostTemplate.resources -is [System.Collections.IDictionary] ? @($hostTemplate.resources.Values) : @($hostTemplate.resources)
+        $identityRoles = @($hostResources | Where-Object {
+                $_.type -eq 'Microsoft.Authorization/roleAssignments' -and $_.properties.principalId -match "userAssignedIdentities'"
+            })
+        $identityRoles.Count | Should -Be 2
+        $owner = @($identityRoles | Where-Object { -not $_.copy })
+        $owner[0].properties.roleDefinitionId | Should -Match '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'
+        $owner[0].condition | Should -Be "[parameters('assignResourceGroupOwner')]"
+        @($identityRoles | Where-Object { $_.copy })[0].condition | Should -Be "[not(parameters('assignResourceGroupOwner'))]"
+        $hostTemplate.variables.hostIdentityRoleDefinitionIds | Should -Be @(
+            'b64e21ea-ac4e-4cdf-9dc9-5b892992bee7' # Azure Connected Machine Onboarding
+            'cd570a14-e51a-42ad-bac8-bafd67325302' # Azure Connected Machine Resource Administrator
+            '865ae368-6a45-4bd1-8fbf-0d5151f56fc1' # Azure Stack HCI Device Management Role
+        )
     }
 }

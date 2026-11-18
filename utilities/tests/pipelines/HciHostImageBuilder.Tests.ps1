@@ -69,13 +69,13 @@ Describe 'HCI host image builder templates' {
         $builder.parameters.resourceGroupName.defaultValue | Should -Be 'rg-avm-persistent-hci-image'
         $builder.parameters.galleryName.defaultValue | Should -Be 'galavmpersistenthci'
         $builder.parameters.imageDefinitionName.defaultValue | Should -Be 'hci-host-image'
-        $builder.parameters.imageVersion.defaultValue | Should -Be '26.1.0'
         $builder.parameters.imageTemplateName.defaultValue | Should -Be 'hci-host-image-builder'
         $builder.parameters.imageBuilderIdentityName.defaultValue | Should -Be 'id-avm-persistent-hci-image-builder'
         $builder.parameters.buildTimeoutInMinutes.defaultValue | Should -Be 570
         $expectedPayloadDefaults = @{
-            hciVhdxDownloadUri = 'https://jumpstartprodsg.blob.core.windows.net/jslocal/localbox/prod/AzLocal2601.vhdx'
-            hciVhdxSha256      = '3a797826d7e7ae7abc55d1071322ddecc80575c2356fea9e74818ab9f6720a1f'
+            imageVersion       = '26.8.0'
+            hciVhdxDownloadUri = 'https://azlocalvhds.blob.core.windows.net/images/AzLocal2608.vhdx'
+            hciVhdxSha256      = 'cd670067f6b07dea2d1a4e7219bf00492de2591557a754a9ed0f13f0b01bfdc5'
         }
         foreach ($entry in $expectedPayloadDefaults.GetEnumerator()) {
             $variable = [regex]::Match($builder.parameters[$entry.Key].defaultValue, "^\[variables\('([^']+)'\)\]$")
@@ -97,6 +97,18 @@ Describe 'HCI host image builder templates' {
         $child.variables.encodedPayloadUri | Should -Be "[base64(parameters('hciVhdxDownloadUri'))]"
         $child.variables.encodedPayloadSha256 | Should -Be "[base64(parameters('hciVhdxSha256'))]"
         $imageTemplate.properties.customize[2].inline | Should -Be "[variables('payloadDownload')]"
+    }
+
+    It 'Embeds the host prerequisite script so builds work from any repository copy' {
+        foreach ($template in @($builder, $child)) {
+            $template.parameters.ContainsKey('assetBaseUri') | Should -BeFalse
+        }
+        $prerequisites = $imageTemplate.properties.customize[0]
+        $prerequisites.name | Should -Be 'InstallHciHostPrerequisites'
+        $prerequisites.ContainsKey('scriptUri') | Should -BeFalse
+        $prerequisites.inline | Should -Be "[variables('prerequisiteInstall')]"
+        $stage1 = (Get-Content -LiteralPath (Join-Path $builderRoot 'azureStackHCIHost' 'scripts' 'hciHostStage1.ps1') -Raw).Replace("`r`n", "`n")
+        @($child.variables.Values | Where-Object { $_ -is [string] -and $_.Replace("`r`n", "`n") -ceq $stage1 }).Count | Should -Be 1
     }
 
     It 'Defaults both entrypoints to the existing single resource region' {
@@ -373,7 +385,7 @@ Describe 'HCI host image builder' {
             $Result.BuildStarted | Should -BeOfType [bool]
             $Result.BuildStarted | Should -Be $Started
             $Result.ResourceGroupName | Should -Be 'rg-avm-persistent-hci-image'
-            $Result.ImageVersionResourceId | Should -Be '/subscriptions/subscription-id/resourceGroups/rg-avm-persistent-hci-image/providers/Microsoft.Compute/galleries/galavmpersistenthci/images/hci-host-image/versions/26.1.0'
+            $Result.ImageVersionResourceId | Should -Be '/subscriptions/subscription-id/resourceGroups/rg-avm-persistent-hci-image/providers/Microsoft.Compute/galleries/galavmpersistenthci/images/hci-host-image/versions/26.8.0'
             $Result.ImageTemplateResourceId | Should -Be "/subscriptions/subscription-id/resourceGroups/rg-avm-persistent-hci-image/providers/Microsoft.VirtualMachineImages/imageTemplates/$TemplateName"
         }
     }
@@ -423,7 +435,7 @@ Describe 'HCI host image builder' {
         }
 
         It 'Skips deployment and build when the deterministic version and replica already succeeded' {
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets'
+            $result = . $buildScript
 
             Assert-TestResult -Result $result -Status 'Skipped' -Started $false
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
@@ -435,7 +447,7 @@ Describe 'HCI host image builder' {
         It 'Skips only when every source, build, and requested region is complete, ignoring case and spaces' {
             Set-TestRegions @('Southeast Asia', 'Australia East', 'East US')
 
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation AUSTRALIAEAST -ReplicationRegions @('eastus', 'East US')
+            $result = . $buildScript -BuildLocation AUSTRALIAEAST -ReplicationRegions @('eastus', 'East US')
 
             Assert-TestResult -Result $result -Status 'Skipped' -Started $false
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
@@ -450,7 +462,7 @@ Describe 'HCI host image builder' {
             $failure = {
                 & {
                     Set-StrictMode -Version Latest
-                    . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions @('southeastasia', 'australiaeast')
+                    . $buildScript -BuildLocation australiaeast -ReplicationRegions @('southeastasia', 'australiaeast')
                 }
             } | Should -Throw '*already exists but is unavailable*No deployment or build was started*Wait for or repair replication before retrying*' -PassThru
 
@@ -491,7 +503,7 @@ Describe 'HCI host image builder' {
                 }
             }
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions eastus } |
+            { . $buildScript -BuildLocation australiaeast -ReplicationRegions eastus } |
                 Should -Throw "$expectedError*No deployment or build was started*"
 
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
@@ -536,7 +548,7 @@ Describe 'HCI host image builder' {
         }
 
         It 'Deploys, starts, and verifies a newly published version with unchanged defaults' {
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets'
+            $result = . $buildScript
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started $true
             Should -Invoke New-AzSubscriptionDeployment -Times 1 -Exactly -ParameterFilter {
@@ -548,9 +560,9 @@ Describe 'HCI host image builder' {
                 $TemplateParameterObject.resourceGroupName -eq 'rg-avm-persistent-hci-image' -and
                 $TemplateParameterObject.galleryName -eq 'galavmpersistenthci' -and
                 $TemplateParameterObject.imageDefinitionName -eq 'hci-host-image' -and
-                $TemplateParameterObject.imageVersion -eq '26.1.0' -and
-                $TemplateParameterObject.hciVhdxDownloadUri -ceq 'https://jumpstartprodsg.blob.core.windows.net/jslocal/localbox/prod/AzLocal2601.vhdx' -and
-                $TemplateParameterObject.hciVhdxSha256 -ceq '3a797826d7e7ae7abc55d1071322ddecc80575c2356fea9e74818ab9f6720a1f' -and
+                $TemplateParameterObject.imageVersion -eq '26.8.0' -and
+                $TemplateParameterObject.hciVhdxDownloadUri -ceq 'https://azlocalvhds.blob.core.windows.net/images/AzLocal2608.vhdx' -and
+                $TemplateParameterObject.hciVhdxSha256 -ceq 'cd670067f6b07dea2d1a4e7219bf00492de2591557a754a9ed0f13f0b01bfdc5' -and
                 $TemplateParameterObject.buildTimeoutInMinutes -eq 570
             }
             Should -Invoke Invoke-AzRestMethod -Times 1 -Exactly -ParameterFilter { $Method -eq 'POST' }
@@ -562,7 +574,7 @@ Describe 'HCI host image builder' {
         It 'Threads explicit regions and a new template name without moving existing assets' {
             Set-TestRegions @('southeastasia', 'australiaeast', 'eastus')
             $script:templateResource.location = 'australiaeast'
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions @('australiaeast', 'eastus') -ImageTemplateName hci-host-image-builder-australiaeast -CreateResourceGroup $false
+            $result = . $buildScript -BuildLocation australiaeast -ReplicationRegions @('australiaeast', 'eastus') -ImageTemplateName hci-host-image-builder-australiaeast -CreateResourceGroup $false
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started $true -TemplateName 'hci-host-image-builder-australiaeast'
             Should -Invoke New-AzSubscriptionDeployment -Times 1 -Exactly -ParameterFilter {
@@ -577,7 +589,7 @@ Describe 'HCI host image builder' {
 
         It 'Forwards an explicitly paired payload URI and digest unchanged' {
             $digest = 'A' * 64
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' `
+            $result = . $buildScript `
                 -HciVhdxDownloadUri 'https://example.test/custom.vhdx' -HciVhdxSha256 $digest
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started $true
@@ -590,7 +602,7 @@ Describe 'HCI host image builder' {
         It 'Derives omitted region inputs from an explicitly selected resource location' {
             Set-TestRegions @('eastus')
             $script:templateResource.location = 'eastus'
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' -Location eastus
+            $result = . $buildScript -Location eastus
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started $true
             Should -Invoke New-AzSubscriptionDeployment -Times 1 -Exactly -ParameterFilter {
@@ -605,7 +617,7 @@ Describe 'HCI host image builder' {
             Set-TestRegions @('southeastasia', 'australiaeast', 'eastus')
             $script:templateResource.location = 'Australia East'
 
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions eastus
+            $result = . $buildScript -BuildLocation australiaeast -ReplicationRegions eastus
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started $false
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
@@ -624,7 +636,7 @@ Describe 'HCI host image builder' {
                 $Path -like '*/imageTemplates/*'
             }
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast } |
+            { . $buildScript -BuildLocation australiaeast } |
                 Should -Throw '*southeastasia*australiaeast*new ImageTemplateName*'
 
             Should -Invoke New-AzSubscriptionDeployment -Times 0 -Exactly
@@ -646,7 +658,7 @@ Describe 'HCI host image builder' {
                 New-TestArmResponse -Resource $script:versionResource
             } -ParameterFilter { $Path -like '*/versions/*' }
 
-            $result = . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions eastus
+            $result = . $buildScript -BuildLocation australiaeast -ReplicationRegions eastus
 
             Assert-TestResult -Result $result -Status 'Succeeded' -Started (-not $resume)
             Should -Invoke Invoke-AzRestMethod -Times 4 -Exactly -ParameterFilter {
@@ -681,7 +693,7 @@ Describe 'HCI host image builder' {
                 }
             }
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' -BuildLocation australiaeast -ReplicationRegions eastus -BuildTimeoutInMinutes 1 } |
+            { . $buildScript -BuildLocation australiaeast -ReplicationRegions eastus -BuildTimeoutInMinutes 1 } |
                 Should -Throw $expectedError
 
             Should -Invoke New-AzSubscriptionDeployment -Times ([int] (-not $resume)) -Exactly
@@ -692,14 +704,14 @@ Describe 'HCI host image builder' {
             $script:templateResource.properties.lastRunStatus.runState = 'Failed'
             $script:templateResource.properties.lastRunStatus.message = 'PackerBuildFailed: payload download failed'
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' } |
+            { . $buildScript } |
                 Should -Throw '*Failed*Provider details require guarded diagnostics*'
         }
 
         It 'Rejects a failed resource deployment before starting an image build' {
             Mock New-AzSubscriptionDeployment { [pscustomobject] @{ ProvisioningState = 'Failed' } }
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' } | Should -Throw '*resource deployment*Failed*'
+            { . $buildScript } | Should -Throw '*resource deployment*Failed*'
 
             Should -Invoke Invoke-AzRestMethod -Times 0 -Exactly -ParameterFilter { $Method -eq 'POST' }
         }
@@ -718,7 +730,7 @@ Describe 'HCI host image builder' {
         ) {
             $inputParameters = @{ $parameter = $value }
 
-            { . $buildScript -AssetBaseUri 'https://example.test/assets' @inputParameters } | Should -Throw
+            { . $buildScript @inputParameters } | Should -Throw
 
             Should -Invoke Set-AzContext -Times 0 -Exactly
         }

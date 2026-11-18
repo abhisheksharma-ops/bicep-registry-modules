@@ -79,6 +79,7 @@
         }
         'Ready' {
             $result = Get-HciEnvironmentReadiness -Context $context -RefreshKubernetes
+            Remove-HciClusterDeploymentAccess -Context $context
             Exit-HciEnvironment -Context $context -Maintenance:$true
             return $result
         }

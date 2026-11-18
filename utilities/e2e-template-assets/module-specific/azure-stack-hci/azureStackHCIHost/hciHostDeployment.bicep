@@ -71,6 +71,9 @@ param hciResourceProviderObjectId string = ''
 @description('Optional. Install updates on the host VM in a weekly maintenance window (Sunday 08:00-10:00 UTC), restarting it if required. Disable for a host that must not install updates or restart during its multi-hour setup and cluster deployment: the host then uses manual patching, without Windows automatic updates.')
 param enableScheduledPatching bool = true
 
+@description('Optional. Grant the host identity Owner on the resource group. Disable to grant only the roles that Arc registration and the edge-device request need: Azure Connected Machine Onboarding, Azure Connected Machine Resource Administrator and Azure Stack HCI Device Management Role.')
+param assignResourceGroupOwner bool = true
+
 // =================================//
 // Deploy Host VM Infrastructure    //
 // =================================//
@@ -82,7 +85,7 @@ resource userAssignedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@
 }
 
 // grant identity owner permissions on the resource group
-resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignResourceGroupOwner) {
   name: guid(subscription().subscriptionId, userAssignedIdentity.name, 'Owner', resourceGroup().id)
   properties: {
     principalId: userAssignedIdentity.properties.principalId
@@ -91,6 +94,25 @@ resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     description: 'Role assigned used for Azure Stack HCI IaC testing pipeline - remove if identity no longer exists!'
   }
 }
+
+// Without Owner: register the Arc machines (stage 6) and request their edge devices (stage 7).
+var hostIdentityRoleDefinitionIds = [
+  'b64e21ea-ac4e-4cdf-9dc9-5b892992bee7' // Azure Connected Machine Onboarding
+  'cd570a14-e51a-42ad-bac8-bafd67325302' // Azure Connected Machine Resource Administrator
+  '865ae368-6a45-4bd1-8fbf-0d5151f56fc1' // Azure Stack HCI Device Management Role
+]
+
+resource hostIdentityRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for roleDefinitionId in hostIdentityRoleDefinitionIds: if (!assignResourceGroupOwner) {
+    name: guid(subscription().subscriptionId, userAssignedIdentity.name, roleDefinitionId, resourceGroup().id)
+    properties: {
+      principalId: userAssignedIdentity.properties.principalId
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitionId)
+      principalType: 'ServicePrincipal'
+      description: 'Role assigned used for Azure Stack HCI IaC testing pipeline - remove if identity no longer exists!'
+    }
+  }
+]
 
 // grant identity contributor permissions on the subscription - needed to register resource providers
 module roleAssignment_subscriptionContributor 'modules/subscriptionRoleAssignment.bicep' = if (assignSubscriptionContributor) {

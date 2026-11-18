@@ -412,7 +412,6 @@ function Start-HciEnvironmentPreparation {
     $pending = New-HciImageReceipt -Store $store
     $build = @{
         TemplateFile              = Join-Path $Context.AssetRoot 'hciHostGalleryBuilder.bicep'
-        AssetBaseUri              = "https://raw.githubusercontent.com/Azure/bicep-registry-modules/$SourceCommit/utilities/e2e-template-assets/module-specific/azure-stack-hci"
         SubscriptionId            = $Context.SubscriptionId
         Location                  = $Context.Config.location
         BuildLocation             = $Context.Config.location
@@ -484,7 +483,6 @@ function Wait-HciEnvironmentImage {
     $store = Get-HciImageReceiptContext -Context $Context -SourceCommit $SourceCommit -RunIdentity $RunIdentity -StorageAccountName $ReceiptStorageAccountName
     $receipt = Get-HciImageReceipt -Store $store -Tags $registry.tags
     $build = @{
-        AssetBaseUri             = "https://raw.githubusercontent.com/Azure/bicep-registry-modules/$SourceCommit/utilities/e2e-template-assets/module-specific/azure-stack-hci"
         SubscriptionId           = $Context.SubscriptionId
         Location                 = $Context.Config.location
         BuildLocation            = $Context.Config.location
@@ -723,6 +721,50 @@ function Get-HciEnvironmentReadiness {
     }
     $result.Foundation = $foundation
     return $result
+}
+
+function Remove-HciClusterDeploymentAccess {
+    [CmdletBinding(SupportsShouldProcess)]
+    param ([Parameter(Mandatory)] [hashtable] $Context)
+
+    # The cluster module keeps its deployment identity's grants on the foundation group after the cluster is deployed.
+    $roleDefinitionIds = @(
+        'b24988ac-6180-42a0-ab88-20f7382dd24c' # Contributor
+        'acdd72a7-3385-48ef-bd42-f606fba81ae7' # Reader
+        'f58310d9-a9f6-439a-9e8d-f62e7b41a168' # Role Based Access Control Administrator
+    )
+    $groupId = $Context.GroupIds.foundation
+    $identityId = "$groupId/providers/Microsoft.ManagedIdentity/userAssignedIdentities/temp-$($Context.Config.clusterName)"
+    $identity = Get-HciArmResource -ResourceId $identityId -ApiVersion '2023-01-31' -AllowNotFound
+    if ($null -eq $identity) { return }
+    $principalId = [guid]::Empty
+    if (-not [guid]::TryParse([string] $identity.properties.principalId, [ref] $principalId) -or $principalId -eq [guid]::Empty) {
+        throw 'The cluster deployment identity has no verifiable principal.'
+    }
+    $filter = [uri]::EscapeDataString("principalId eq '$($principalId.ToString('D'))'")
+    $response = Invoke-AzRestMethod -Method GET -ErrorAction Stop `
+        -Path "$groupId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=$filter"
+    $content = ConvertFrom-Json -InputObject $response.Content -AsHashtable -NoEnumerate -ErrorAction Stop
+    if ($response.StatusCode -ne 200 -or $content -isnot [System.Collections.IDictionary] -or
+        $content.value -isnot [array] -or $content.nextLink) {
+        throw 'The cluster deployment identity''s role assignments could not be listed completely.'
+    }
+    foreach ($assignment in $content.value) {
+        $properties = $assignment.properties
+        if ($properties.principalId -ine $principalId.ToString('D') -or $properties.scope -ine $groupId -or
+            ([string] $properties.roleDefinitionId -split '/')[-1] -notin $roleDefinitionIds) {
+            continue
+        }
+        if ($assignment.id -notmatch "^$([regex]::Escape($groupId))/providers/Microsoft\.Authorization/roleAssignments/[0-9a-fA-F-]{36}$") {
+            throw 'A cluster deployment identity role assignment has an unexpected identity.'
+        }
+        if ($PSCmdlet.ShouldProcess($assignment.id, 'Remove the cluster deployment identity''s role assignment')) {
+            $deleted = Invoke-AzRestMethod -Method DELETE -Path "$($assignment.id)?api-version=2022-04-01" -ErrorAction Stop
+            if ($deleted.StatusCode -notin @(200, 202, 204)) {
+                throw 'A role assignment of the cluster deployment identity was not removed.'
+            }
+        }
+    }
 }
 
 function Enter-HciEnvironmentTest {

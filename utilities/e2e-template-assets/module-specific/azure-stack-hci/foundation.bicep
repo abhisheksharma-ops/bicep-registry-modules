@@ -69,6 +69,8 @@ module dependencies 'dependencies/dependencies.bicep' = {
     hciResourceProviderObjectId: builtInServicePrincipalObjectId
     // A weekly update window could install updates and restart the host during the hours-long foundation deployment.
     enableScheduledPatching: false
+    // The host identity only registers the Arc machines and requests their edge devices; it doesn't need Owner.
+    assignResourceGroupOwner: false
   }
 }
 
