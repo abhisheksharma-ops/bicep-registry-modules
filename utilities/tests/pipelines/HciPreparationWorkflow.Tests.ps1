@@ -161,8 +161,9 @@ Describe 'Reserved Azure Local workflow and fixture wiring' {
             $login = $steps | Where-Object { $_.uses -like 'azure/login@*' }
             [array]::IndexOf($steps, $resolve) | Should -BeLessThan ([array]::IndexOf($steps, $login))
             $resolve.env.VALIDATE_CLIENT_ID | Should -Be '${{ vars.VALIDATE_CLIENT_ID || secrets.VALIDATE_CLIENT_ID }}'
+            $resolve.env.HCI_LOG_MASKS | Should -Be '${{ secrets.HCI_LOG_MASKS }}'
             $resolve.run | Should -Match '\[string\] \$env:VALIDATE_CLIENT_ID'
-            $resolve.run | Should -Match '::add-mask::'
+            $resolve.run | Should -Match ([regex]::Escape('Register-HciLogMask -AdditionalMasks $env:HCI_LOG_MASKS'))
         }
         $receipt = $prepareSteps | Where-Object id -EQ subscription
         $receipt.env.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT | Should -Be '${{ vars.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT || secrets.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT }}'

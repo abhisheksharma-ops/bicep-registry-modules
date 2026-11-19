@@ -224,6 +224,16 @@ Describe 'Reserved Azure Local environment ownership and readiness' {
         $script:hciContext = $context
     }
 
+    It 'Masks each identifier and each extra mask entry in every casing, and rejects entries too short to mask safely' {
+        $masks = @(Register-HciLogMask -Value @('AbCd-1234', '') -AdditionalMasks "Test Subscription;`r`ntenant.example`n `n")
+        $masks | Should -Be @(
+            '::add-mask::AbCd-1234', '::add-mask::abcd-1234', '::add-mask::ABCD-1234'
+            '::add-mask::Test Subscription', '::add-mask::test subscription', '::add-mask::TEST SUBSCRIPTION'
+            '::add-mask::tenant.example', '::add-mask::TENANT.EXAMPLE'
+        )
+        { Register-HciLogMask -AdditionalMasks "valid-entry`nabc" } | Should -Throw '*at least 4 characters*'
+    }
+
     It 'Uses explicit reserved-subscription identities and distinct CI-owned groups' {
         $context.Config.location | Should -BeExactly 'australiaeast'
         $context.OwnedGroupIds.Count | Should -Be 3
