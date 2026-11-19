@@ -42,6 +42,7 @@ jobs:
           VALIDATE_TENANT_ID: ${{ vars.VALIDATE_TENANT_ID || secrets.VALIDATE_TENANT_ID }}
           VALIDATE_CLIENT_ID: ${{ vars.VALIDATE_CLIENT_ID || secrets.VALIDATE_CLIENT_ID }}
           HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT: ${{ vars.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT || secrets.HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT }}
+          HCI_LOG_MASKS: ${{ secrets.HCI_LOG_MASKS }}
         run: |
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'utilities' 'pipelines' 'sharedScripts' 'HciTestEnvironment.ps1')
@@ -49,13 +50,8 @@ jobs:
           $subscription = Get-HciTestSubscription -ModulePath 'avm/res/azure-stack-hci/logical-network' `
             -TestSubscriptionIds $env:TEST_SUBSCRIPTION_IDS -SubscriptionIndex $testCase.subscriptionIndex `
             -SubscriptionKey $testCase.subscriptionKey -RepoRootPath $env:GITHUB_WORKSPACE
-          $identifiers = @([string] $subscription.id, [string] $env:VALIDATE_TENANT_ID, [string] $env:VALIDATE_CLIENT_ID, [string] $env:HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT)
-          foreach ($value in $identifiers) {
-            if (-not [string]::IsNullOrWhiteSpace($value)) {
-              @($value, $value.ToLowerInvariant(), $value.ToUpperInvariant()) | Select-Object -Unique |
-                ForEach-Object { Write-Output "::add-mask::$_" }
-            }
-          }
+          Register-HciLogMask -AdditionalMasks $env:HCI_LOG_MASKS -Value @(
+            [string] $subscription.id, [string] $env:VALIDATE_TENANT_ID, [string] $env:VALIDATE_CLIENT_ID, [string] $env:HCI_IMAGE_RECEIPT_STORAGE_ACCOUNT)
           "subscriptionId=$($subscription.id)" >> $env:GITHUB_OUTPUT
       - name: "Log in to the reserved subscription"
         uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2

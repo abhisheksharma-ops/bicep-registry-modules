@@ -42,6 +42,26 @@ function Get-HciArbServicePrincipalParameterName {
     return $supplied
 }
 
+function Register-HciLogMask {
+    # GitHub masks a secret only as its whole value, so each identifier inside a secret is registered on its own.
+    [CmdletBinding()]
+    param (
+        [string[]] $Value = @(),
+        [string] $AdditionalMasks
+    )
+
+    $entries = @($Value) + @(([string] $AdditionalMasks) -split '[\r\n;]')
+    foreach ($entry in $entries) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        $text = $entry.Trim()
+        if ($text.Length -lt 4) {
+            throw 'Every log mask entry must have at least 4 characters; shorter entries would hide unrelated log text.'
+        }
+        @($text, $text.ToLowerInvariant(), $text.ToUpperInvariant()) | Select-Object -Unique |
+            ForEach-Object { Write-Output "::add-mask::$_" }
+    }
+}
+
 function Get-HciTestSubscription {
     [CmdletBinding()]
     param (
